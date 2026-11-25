@@ -73,3 +73,41 @@ def test_close_twice_is_fine(pair):
     device, _peer = pair
     device.close()
     device.close()
+
+
+def test_usage_of_lcd_prefix():
+    from rgbhub.platforms.linux.hidraw import usage_of
+
+    assert usage_of(bytes.fromhex("061aff0901"))[0] == 0xFF1A
+
+
+def test_usage_of_via_prefix():
+    from rgbhub.platforms.linux.hidraw import usage_of
+
+    assert usage_of(bytes.fromhex("0660ff0961")) == (0xFF60, 0x61)
+    assert usage_of(bytes.fromhex("05010902")) == (1, 2)
+    assert usage_of(b"") == (None, None)
+
+
+def test_hidraw_bus_contract(roots):
+    from contracts import check_hid_bus
+
+    from rgbhub.core.interfaces import HidBus, HidMatch
+    from rgbhub.platforms.linux.hidraw import HidrawBus
+
+    sys_root, dev_root = roots
+    for name in ("hidraw2", "hidraw8", "hidraw4"):
+        (dev_root / name).write_bytes(b"")
+    bus = HidrawBus(sys_root, dev_root)
+    assert isinstance(bus, HidBus)
+    vendor = str(dev_root / "hidraw8")
+    assert bus.find(HidMatch(0x03F0, 0x7397, usage_page=0xFF1A)) == vendor
+    assert bus.find(HidMatch(0x03F0, 0x7397, usage_page=0x0001)) == str(dev_root / "hidraw2")
+    assert bus.find(HidMatch(0x103C, 0x84FD, 0xFF1A)) is None
+    # A regular file cannot queue replies or record writes separately, so those hooks are left out.
+    check_hid_bus(
+        bus,
+        HidMatch(0x03F0, 0x7397, 0xFF1A),
+        vendor,
+        lambda path: __import__("os").unlink(path),
+    )
