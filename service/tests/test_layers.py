@@ -23,7 +23,6 @@ def test_core_never_imports_devices_or_platforms(path):
     for level, module, names in _imports(path):
         parts = module.split(".") if module else []
         if level == 0:  # absolute: rgbhub.devices...
-            bad = parts[:2] in (["rgbhub", x] for x in FORBIDDEN)
             bad = len(parts) > 1 and parts[0] == "rgbhub" and parts[1] in FORBIDDEN
         elif level == 1:  # from .x import y  /  from . import x
             bad = (parts[:1] and parts[0] in FORBIDDEN) or (
