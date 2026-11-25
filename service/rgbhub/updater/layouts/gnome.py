@@ -60,6 +60,14 @@ USER_UNITS = (
     "rgbhub-update.service",
     "rgbhub-update.timer",
 )
+APP_ID = "io.github.konfus_dev.RGBHub"
+# The app-grid launcher a version brings: (file in a version, under applications/
+# or icons/ in ~/.local/share).
+LAUNCHER_DESKTOP = ("frontends/gnome-shell/rgbhub.desktop", f"{APP_ID}.desktop")
+LAUNCHER_ICON = (
+    f"frontends/gnome-shell/icons/hicolor/scalable/apps/{APP_ID}.svg",
+    f"hicolor/scalable/apps/{APP_ID}.svg",
+)
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -88,6 +96,8 @@ class GnomeLayout:
         system: Path = Path("/"),
         user: str | None = None,
         units: Path | None = None,
+        applications: Path | None = None,
+        icons: Path | None = None,
     ):
         self.root = Path(root)
         self.current = self.root / "current"
@@ -95,6 +105,9 @@ class GnomeLayout:
         self.extensions = extensions or Path.home() / ".local/share/gnome-shell/extensions"
         self.system = Path(system)
         self.units = units or Path.home() / ".config/systemd/user"
+        data = Path.home() / ".local/share"
+        self.applications = applications or data / "applications"
+        self.icons = icons or data / "icons"
         self.user = user or pwd.getpwuid(os.getuid()).pw_name
         self._run = run
         self._sleep = sleep
@@ -186,6 +199,7 @@ class GnomeLayout:
         self._activated = version
         self._link_extension()
         self._install_user_units(version)
+        self._install_launcher(version)
 
     def _install_user_units(self, version: Path) -> None:
         """Copy the version's user units over differing ones, then `daemon-reload`."""
@@ -211,6 +225,32 @@ class GnomeLayout:
             done = self._run([SYSTEMCTL, "--user", "daemon-reload"])
             if done.returncode != 0:
                 log.warning("systemctl --user daemon-reload failed (%s)", done.returncode)
+
+    @staticmethod
+    def _replace_if_different(source: Path, dest: Path) -> bool:
+        """Copy `source` over `dest` (temp file, then replace) unless identical."""
+        data = source.read_bytes()
+        try:
+            if dest.read_bytes() == data:
+                return False
+        except OSError:
+            pass
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(f".{dest.name}.new")
+        tmp.write_bytes(data)
+        os.replace(tmp, dest)
+        return True
+
+    def _install_launcher(self, version: Path) -> None:
+        """Refresh the app-grid entry and its icon when the version's copies differ."""
+        changed = []
+        pairs = ((LAUNCHER_DESKTOP, self.applications), (LAUNCHER_ICON, self.icons))
+        for (name, rel), base in pairs:
+            source = version / name
+            if source.is_file() and self._replace_if_different(source, base / rel):
+                changed.append(rel)
+        if changed:
+            log.info("installed launcher files: %s", ", ".join(changed))
 
     def _link_extension(self) -> None:
         """The extension is reached through `current`, so it follows every switch."""

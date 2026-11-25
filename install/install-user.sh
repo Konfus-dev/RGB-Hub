@@ -45,6 +45,9 @@ current="$root/current"           # -> versions/<commit>, or the working copy (-
 py="$current/.venv/bin/python"
 extensions="$HOME/.local/share/gnome-shell/extensions"
 units="$HOME/.config/systemd/user"
+app_id=io.github.konfus_dev.RGBHub
+applications="$HOME/.local/share/applications"
+icons="$HOME/.local/share/icons"
 
 # --- From before RGB-Hub (OmenRGB-Controller) ----------------------------------
 # Its settings and files are taken over by the hub itself on first start.
@@ -117,6 +120,15 @@ if [[ -e "$extensions/$uuid" && ! -L "$extensions/$uuid" ]]; then
 fi
 ln -sfn "$current/frontends/gnome-shell/$uuid" "$extensions/$uuid"
 glib-compile-schemas --strict "$current/frontends/gnome-shell/$uuid/schemas"
+
+echo "==> App launcher ('RGB Hub' in Activities and the app grid)"
+mkdir -p "$applications" "$icons/hicolor/scalable/apps"
+install -m 0644 "$current/frontends/gnome-shell/rgbhub.desktop" "$applications/$app_id.desktop"
+install -m 0644 "$current/frontends/gnome-shell/icons/hicolor/scalable/apps/$app_id.svg" \
+    "$icons/hicolor/scalable/apps/$app_id.svg"
+# Only caches; the launcher works without them.
+update-desktop-database "$applications" 2>/dev/null || true
+gtk-update-icon-cache -q -t "$icons/hicolor" 2>/dev/null || true
 
 echo "==> OpenRGB limited to the case-light board"
 orgb="$HOME/.config/rgbhub/openrgb"

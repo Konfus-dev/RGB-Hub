@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RGB Hub
+Comment=Lights and cooler screen for the OMEN PC and IQUNIX keyboard
+Exec=gnome-extensions prefs rgbhub@konfus-dev.github.io
+Icon=io.github.konfus_dev.RGBHub
+Categories=Settings;HardwareSettings;
+Keywords=RGB;lights;LCD;OMEN;keyboard;
+StartupNotify=true
+OnlyShowIn=GNOME;

@@ -96,6 +96,8 @@ gnome-extensions enable rgbhub@konfus-dev.github.io
 
 The "RGB Hub" button now appears in the top-right menu. Press it to open
 the settings window (or bring it to the front if it is already open).
+The installer also adds an "RGB Hub" launcher, so the settings window can be
+found in Activities search and the app grid like any other app.
 
 Two ways to run it:
 
@@ -325,6 +327,8 @@ systemctl --user disable --now rgbhub openrgb-server rgbhub-update.timer
 rm ~/.config/systemd/user/rgbhub.service ~/.config/systemd/user/openrgb-server.service \
    ~/.config/systemd/user/rgbhub-update.service ~/.config/systemd/user/rgbhub-update.timer
 rm ~/.local/share/gnome-shell/extensions/rgbhub@konfus-dev.github.io
+rm ~/.local/share/applications/io.github.konfus_dev.RGBHub.desktop \
+   ~/.local/share/icons/hicolor/scalable/apps/io.github.konfus_dev.RGBHub.svg
 rm -r ~/.local/share/rgbhub
 rm -r ~/.config/rgbhub
 sudo systemctl disable --now rgbhub-ram.socket rgbhub-ram.service
