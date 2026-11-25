@@ -8,6 +8,7 @@ and HTTP requests go to fakes."""
 import importlib.util
 import io
 import json
+import re
 import shutil
 import subprocess
 import zipfile
@@ -817,3 +818,51 @@ def test_finish_setup_checks_approved_updates_and_refuses_links():
     # The services' note is saved before each service is changed.
     body = text[text.index("function Disable-HpServices") :]
     assert body.index("Save-Record $saved") < body.index("sc.exe config")
+
+
+@pytest.mark.parametrize("name", ["a b.py", "x%2f..py", "x#y.py", "ünï.py", "a?.ps1"])
+def test_verified_update_refuses_odd_file_names(tmp_path, name):
+    v = approved_version(tmp_path)
+    folder = "helper" if name.endswith(".py") else "install/windows"
+    (v / folder / name).write_text("#")
+    gh = FakeGitHub(v)
+    with pytest.raises(verify.Refused, match="odd file names"):
+        verify.stage(v, tmp_path / "staging", gh.json, gh.bytes)
+    assert gh.asked == []  # nothing was asked of GitHub
+    assert not (tmp_path / "staging").exists()
+
+
+def restore_function() -> str:
+    text = (INSTALL / "install-windows.sh").read_text()
+    start = text.index("restore_program_files() {")
+    return text[start : text.index("\n}\n", start) + 3]
+
+
+@pytest.mark.parametrize("program_there", [False, True])
+def test_install_swap_is_always_restorable(tmp_path, program_there):
+    """A swap stopped after the old copy was moved aside: the old copy goes back;
+    with a new copy in place, the old one is removed."""
+    program, old = tmp_path / "RGB-Hub", tmp_path / ".RGB-Hub.old"
+    (old / "helper").mkdir(parents=True)
+    (old / "helper" / "old.py").write_text("#")
+    if program_there:
+        (program / "helper").mkdir(parents=True)
+    script = restore_function() + f'program="{program}"\npf_old="{old}"\nrestore_program_files\n'
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert not old.exists()
+    if program_there:
+        assert not (program / "helper" / "old.py").exists()
+    else:
+        assert (program / "helper" / "old.py").is_file()
+
+
+def test_uninstall_never_deletes_through_links():
+    text = (INSTALL / "windows" / "uninstall.ps1").read_text()
+    assert "function Find-Reparse" in text and "ReparsePoint" in text
+    # Every recursive delete goes through Remove-Folder, which looks for links first.
+    assert text.count("Remove-Item -LiteralPath $Folder -Recurse -Force") == 1
+    assert len(re.findall(r"Remove-Item[^\n]*-Recurse", text)) == 1
+    body = text[text.index("function Remove-Folder") :]
+    assert body.index("Find-Reparse $Folder") < body.index("Remove-Item -LiteralPath $Folder")
+    assert "Remove-Folder $Roaming" in text

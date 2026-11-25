@@ -50,57 +50,103 @@ foreach ($task in @('RGB-Hub update', 'RGB-Hub', 'RGB-Hub RAM')) {
 # The hub shows the Default look when it is stopped; give it a moment to let go.
 Start-Sleep -Seconds 3
 
-if (Test-Path $Record) {
-    $saved = Get-Content -Raw $Record | ConvertFrom-Json
-    foreach ($entry in $saved.PSObject.Properties) {
-        $name = $entry.Name
-        $start = [int]$entry.Value.Start
-        $mode = $StartTypes[$start]
-        if (($start -eq 2) -and ([int]$entry.Value.DelayedAutostart -eq 1)) { $mode = 'delayed-auto' }
-        if (-not $mode) { continue }
-        & sc.exe config $name start= $mode 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "${name}: start type is '$mode' again"
-            if ($mode -in @('auto', 'delayed-auto')) { & sc.exe start $name 2>&1 | Out-Null }
-        } else {
-            Write-Host "${name}: could not set its start type back to '$mode'"
+function Test-Reparse([string]$Path) {
+    # A link or junction (or anything else that redirects).
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $item = Get-Item -LiteralPath $Path -Force
+    return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+function Find-Reparse([string]$Folder) {
+    # The first link or junction at $Folder, on the way to it, or anywhere under
+    # it; $null if there is none. Windows PowerShell 5.1 would delete through one.
+    $path = $Folder
+    while ($path -and ($path.Length -gt 3)) {
+        if (Test-Reparse $path) { return $path }
+        $path = Split-Path -Parent $path
+    }
+    $found = Get-ChildItem -LiteralPath $Folder -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($found) { return $found.FullName }
+    return $null
+}
+
+function Remove-Folder([string]$Folder) {
+    # True if $Folder is gone (or was never there).
+    if (-not (Test-Path -LiteralPath $Folder)) { return $true }
+    try {
+        $link = Find-Reparse $Folder
+        if ($link) {
+            Write-Host "Not removing ${Folder}: $link is a link or junction (remove it by hand)"
+            return $false
+        }
+        Remove-Item -LiteralPath $Folder -Recurse -Force
+        Write-Host "Removed $Folder"
+        return $true
+    } catch {
+        Write-Host "Could not remove all of ${Folder}: $_"
+        return $false
+    }
+}
+
+try {
+    if (Test-Path -LiteralPath $Record) {
+        $saved = Get-Content -Raw -LiteralPath $Record | ConvertFrom-Json
+        foreach ($entry in $saved.PSObject.Properties) {
+            $name = $entry.Name
+            $start = [int]$entry.Value.Start
+            $mode = $StartTypes[$start]
+            if (($start -eq 2) -and ([int]$entry.Value.DelayedAutostart -eq 1)) { $mode = 'delayed-auto' }
+            if (-not $mode) { continue }
+            & sc.exe config $name start= $mode 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "${name}: start type is '$mode' again"
+                if ($mode -in @('auto', 'delayed-auto')) { & sc.exe start $name 2>&1 | Out-Null }
+            } else {
+                Write-Host "${name}: could not set its start type back to '$mode'"
+            }
         }
     }
+} catch {
+    Write-Host "Could not put HP's services back from ${Record}: $_"
+    Write-Host 'Their earlier start types can be set again in the Services app.'
 }
 
 # Anything still running from the two install folders (the hub, the RAM helper,
 # the updater) would keep its files in use.
-foreach ($process in @(Get-CimInstance Win32_Process)) {
-    $exe = $process.ExecutablePath
-    if ($exe -and ($exe.StartsWith("$Program\", 'OrdinalIgnoreCase') -or $exe.StartsWith("$AppRoot\", 'OrdinalIgnoreCase'))) {
-        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-        Write-Host "Stopped $($process.Name) ($($process.ProcessId))"
+try {
+    foreach ($process in @(Get-CimInstance Win32_Process)) {
+        $exe = $process.ExecutablePath
+        if ($exe -and ($exe.StartsWith("$Program\", 'OrdinalIgnoreCase') -or $exe.StartsWith("$AppRoot\", 'OrdinalIgnoreCase'))) {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopped $($process.Name) ($($process.ProcessId))"
+        }
     }
+} catch {
+    Write-Host "Could not look for RGB-Hub programs still running: $_"
 }
 Start-Sleep -Seconds 1
 
 $left = @()
 foreach ($folder in @($AppRoot, $Data, $Program)) {
-    if (-not (Test-Path -LiteralPath $folder)) { continue }
-    try {
-        Remove-Item -LiteralPath $folder -Recurse -Force
-        Write-Host "Removed $folder"
-    } catch {
-        Write-Host "Could not remove all of ${folder}: $_"
-        $left += $folder
-    }
+    if (-not (Remove-Folder $folder)) { $left += $folder }
 }
-Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $Startup
-if ($RemoveSettings -and (Test-Path $Roaming)) {
-    Remove-Item -Recurse -Force $Roaming
-    Write-Host "Removed the settings ($Roaming)"
-} elseif (Test-Path $Roaming) {
+try {
+    if (-not (Test-Reparse $Startup)) {
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $Startup
+    }
+} catch {
+    Write-Host "Could not remove ${Startup}: $_"
+}
+if ($RemoveSettings) {
+    if (-not (Remove-Folder $Roaming)) { $left += $Roaming }
+} elseif (Test-Path -LiteralPath $Roaming) {
     Write-Host "Kept the settings in $Roaming (add -RemoveSettings to remove them too)"
 }
 
 Write-Host ''
 if ($left.Count) {
-    Write-Host ('Still there (delete by hand after a restart): ' + ($left -join ', '))
+    Write-Host ('Still there (delete by hand): ' + ($left -join ', '))
     exit 1
 }
 Write-Host 'RGB-Hub is removed. OMEN Gaming Hub can be installed again from the Microsoft Store.'

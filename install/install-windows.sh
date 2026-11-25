@@ -83,16 +83,32 @@ as_owner() {
         PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 "$@"
 }
 
+# A swap of C:\Program Files\RGB-Hub that stopped half-way leaves the old copy
+# as .RGB-Hub.old and none in place: put it back (never delete it then).
+restore_program_files() {
+    if [[ -n $program && -n $pf_old && -d $pf_old ]]; then
+        if [[ ! -e $program ]]; then
+            mv "$pf_old" "$program" && echo "    (put the previous C:\Program Files\RGB-Hub back)" >&2
+        else
+            rm -rf "$pf_old"
+        fi
+    fi
+}
+
 tmp=
 mounted_here=
 made_rw=
 pf_new=
+program=
+pf_old=
 cleanup() {
     local status=$?
     trap - EXIT
     if [[ -n $pf_new ]]; then
         rm -rf "$pf_new"  # a half-built Program Files copy; the old one is untouched
     fi
+    restore_program_files
+
     if [[ -n $made_rw ]]; then
         sync
         if ! mount -o remount,ro "$mnt"; then
@@ -274,7 +290,8 @@ if [[ -z $windows_ahead ]]; then
     pf_new="$mnt/Program Files/.RGB-Hub.new"
     pf_old="$mnt/Program Files/.RGB-Hub.old"
     echo "==> C:\\Program Files\\RGB-Hub (the RAM helper; admin-only)"
-    rm -rf "$pf_new" "$pf_old"
+    restore_program_files  # left by an earlier run that stopped mid-swap
+    rm -rf "$pf_new"
     mkdir "$pf_new"
     if ! python3 -I "$snap/install/ntfs_security.py" "$pf_new"; then
         rmdir "$pf_new"
@@ -299,7 +316,7 @@ if [[ -z $windows_ahead ]]; then
     fi
     mv "$pf_new" "$program"
     pf_new=
-    rm -rf "$pf_old"
+    restore_program_files  # $program is in place: the old copy goes
 
     echo "==> C:\\Users\\$user\\AppData\\Local\\Programs\\RGB-Hub (the hub and its updates)"
     mkdir -p "$root"

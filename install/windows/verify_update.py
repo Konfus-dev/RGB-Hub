@@ -39,6 +39,7 @@ RAW = f"https://raw.githubusercontent.com/{REPO}"
 USER_AGENT = "rgbhub-updater"
 TIMEOUT_S = 30
 COMMIT = re.compile(r"[0-9a-f]{40}")
+SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # what goes into a GitHub address as a file name
 # (folder in a version, file suffix): what finish-setup.ps1 installs into Program Files.
 PRIVILEGED = (("helper", ".py"), ("install/windows", ".ps1"), ("install/windows", ".py"))
 
@@ -98,6 +99,9 @@ def stage(version: Path, staging: Path, get_json=fetch_json, get_bytes=fetch_byt
     if not COMMIT.fullmatch(sha):
         raise Refused(f"{version} is not a version folder (its name is not a commit id)")
     names = privileged_files(version)
+    odd = [n for n in names if not SAFE_NAME.fullmatch(n.rsplit("/", 1)[1])]
+    if odd:
+        raise Refused(f"odd file names in {version}: {', '.join(odd)}")
     if not names:
         raise Refused(f"{version} has none of RGB-Hub's admin parts")
     if not on_main(sha, get_json):
