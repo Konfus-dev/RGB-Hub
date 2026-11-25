@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import threading
+
 from contracts import check_hid_bus, check_runtime
 
 from rgbhub.core.interfaces import FakeHidBus, FakeHidPort, HidMatch, HidPort
@@ -51,3 +53,33 @@ def test_glib_runtime_contract():
     from rgbhub.platforms.linux.glib_runtime import GLibRuntime
 
     check_runtime(GLibRuntime)
+
+
+def test_thread_runtime_contract():
+    from rgbhub.core.thread_runtime import ThreadRuntime
+
+    check_runtime(lambda: ThreadRuntime(poll_s=0.05))
+
+
+def test_thread_runtime_survives_raising_timer():
+    from rgbhub.core.thread_runtime import ThreadRuntime
+
+    runtime = ThreadRuntime(poll_s=0.05)
+    calls = []
+
+    def raising() -> bool:
+        calls.append(1)
+        if len(calls) >= 3:
+            runtime.stop()
+        raise RuntimeError("boom")
+
+    runtime.every(10, raising)
+    runtime.call_soon(lambda: 1 / 0)  # a failing queued call must not kill the loop either
+    watchdog = threading.Timer(5.0, runtime.stop)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        runtime.run_until_stopped()
+    finally:
+        watchdog.cancel()
+    assert len(calls) >= 3
