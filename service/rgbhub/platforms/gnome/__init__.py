@@ -24,14 +24,9 @@ from gi.repository import GLib
 
 from ...core.hub import Hub
 from ...core.lcd_folder import load_lcd_folder
-from ...core.lights import Lights
 from ...core.look import Looks, cover_lcd
-from ...devices.iqunix_keyboard import IqunixKeyboard, mg65, via
-from ...devices.omen_pc import OmenPc
-from ...devices.omen_pc import model as omen_model
-from ...devices.omen_pc.lcd_fade import fade_frames
-from ...devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
-from ...devices.omen_pc.ram import RamLights
+from ...core.platform import Platform
+from ...devices import build_all
 from ..linux import openrgb
 from ..linux.glib_runtime import GLibRuntime
 from ..linux.hidraw import HidrawBus
@@ -123,27 +118,16 @@ def main(argv: list[str] | None = None) -> int:
     runtime = GLibRuntime()
     theme = gnome_theme.DesktopTheme()
     looks = make_looks(theme, args.lcd_folder)
-    bus = HidrawBus()
+    platform = Platform(
+        "gnome",
+        HidrawBus(),
+        runtime,
+        ram_bus=HelperRamBus(),
+        case_lights=openrgb.connect,
+    )
     hub = Hub(
         settings,
-        [
-            OmenPc(
-                LcdStreamer(lcd_opener(bus)),
-                Lights(openrgb.connect, omen_model.HIDDEN_ZONES, omen_model.LED_GAMMA),
-                ram=RamLights(
-                    HelperRamBus(),
-                    gamma=omen_model.LED_GAMMA,
-                    background=True,
-                ),
-                display_names=omen_model.DISPLAY_NAMES,
-                fade=fade_frames,
-                watch_file=runtime.watch_file,
-            ),
-            IqunixKeyboard(
-                Lights(via.opener(mg65.MG65, bus), name="Keyboard lights"),
-                display_names=mg65.DISPLAY_NAMES,
-            ),
-        ],
+        build_all(platform),
         looks=looks,
         scheduler=runtime,
         focus_report_wait_s=FOCUS_REPORT_WAIT_S,

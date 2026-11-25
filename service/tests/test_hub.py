@@ -170,7 +170,14 @@ def test_status_lists_every_device():
     hub.start()
     report = json.loads(settings.get("status"))
     assert report["devices"] == [
-        {"id": "IQUNIX-KEYBOARD", "label": "IQUNIX-KEYBOARD", "connected": True, "lights": []}
+        {
+            "id": "IQUNIX-KEYBOARD",
+            "label": "IQUNIX-KEYBOARD",
+            "icon": "input-keyboard-symbolic",
+            "has-lcd": False,
+            "connected": True,
+            "lights": [],
+        }
     ]
     hub.stop(show_default=False)
 

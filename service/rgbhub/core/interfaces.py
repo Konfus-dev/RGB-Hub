@@ -203,3 +203,20 @@ class FakeRamBus:
 
     def sticks(self) -> list[int]:
         return list(self._sticks)
+
+
+class ManualRuntime(ManualScheduler):
+    """A Runtime that does nothing by itself: timers only fire when a test
+    calls them, files are not watched. For tests and `--self-check`."""
+
+    def watch_file(self, path: str, on_change: Callable[[], None]) -> Callable[[], None]:
+        return lambda: None
+
+    def call_soon(self, fn: Callable[[], None]) -> None:
+        fn()
+
+    def run_until_stopped(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass

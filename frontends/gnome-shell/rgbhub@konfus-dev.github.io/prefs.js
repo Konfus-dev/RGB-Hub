@@ -26,7 +26,8 @@ const DEFAULT_MODE = 'Static';
 const FIT_VALUES = ['fill', 'fit'];
 const FIT_LABELS = ['Fill the screen (crop edges)', 'Show the whole image (black bars)'];
 
-// The hub's devices (service/rgbhub/core/settings_schema.py DEVICE_IDS).
+// Used only while the hub has not reported its devices (not running yet); once it
+// runs, the devices come from its status report (see hubDevices).
 const DEVICES = [
     {id: 'OMEN-PC', label: 'OMEN-PC', icon: 'computer-symbolic', lcd: true},
     {id: 'IQUNIX-KEYBOARD', label: 'IQUNIX-KEYBOARD', icon: 'input-keyboard-symbolic', lcd: false},
@@ -46,6 +47,19 @@ function readStatus(settings) {
     } catch {
         return {};
     }
+}
+
+/** The devices the hub reported (id, label, icon, has-lcd), or the fallback list. */
+function hubDevices(settings) {
+    const reported = readStatus(settings).devices ?? [];
+    if (reported.length === 0)
+        return DEVICES;
+    return reported.map(device => ({
+        id: device.id,
+        label: device.label ?? device.id,
+        icon: device.icon ?? 'computer-symbolic',
+        lcd: Boolean(device['has-lcd']),
+    }));
 }
 
 /** One device's part of the status report, or null. */
@@ -497,7 +511,7 @@ function buildDevicePage(settings, window, device) {
 
 // --- Auto page ------------------------------------------------------------------
 
-function buildAutoPage(settings, window) {
+function buildAutoPage(settings, window, devices) {
     const page = new Adw.PreferencesPage({title: 'Auto', icon_name: 'starred-symbolic'});
 
     const group = new Adw.PreferencesGroup({
@@ -512,19 +526,19 @@ function buildAutoPage(settings, window) {
     const allRow = new Adw.SwitchRow({title: 'Auto mode', subtitle: 'Every device'});
     const everyOn = () => {
         const auto = settings.get_value('auto-devices').deepUnpack();
-        return DEVICES.every(device => auto[device.id]);
+        return devices.every(device => auto[device.id]);
     };
     allRow.connect('notify::active', () => {
         if (allRow.active === everyOn())
             return;
         settings.set_value('auto-devices', new GLib.Variant('a{sb}',
-            Object.fromEntries(DEVICES.map(device => [device.id, allRow.active]))));
+            Object.fromEntries(devices.map(device => [device.id, allRow.active]))));
     });
     group.add(allRow);
 
     const devicesGroup = new Adw.PreferencesGroup({title: 'Per device'});
     page.add(devicesGroup);
-    for (const device of DEVICES) {
+    for (const device of devices) {
         const row = deviceSwitchRow(settings, 'auto-devices', device.id, false,
             {title: device.label});
         devicesGroup.add(row);
@@ -632,8 +646,9 @@ export default class RgbHubPreferences extends ExtensionPreferences {
         loadStyles();
         window.set_search_enabled(false); // short pages; nothing to search
         window.set_default_size(560, 760);
-        window.add(buildAutoPage(settings, window));
-        for (const device of DEVICES)
+        const devices = hubDevices(settings);
+        window.add(buildAutoPage(settings, window, devices));
+        for (const device of devices)
             window.add(buildDevicePage(settings, window, device));
     }
 }

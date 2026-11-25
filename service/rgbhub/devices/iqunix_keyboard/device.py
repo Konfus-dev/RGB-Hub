@@ -16,6 +16,7 @@ DEVICE_ID = "IQUNIX-KEYBOARD"
 class IqunixKeyboard:
     id = DEVICE_ID
     label = "IQUNIX-KEYBOARD"
+    icon = "input-keyboard-symbolic"
 
     def __init__(self, lights: Lights, display_names: dict[str, str] | None = None):
         """`lights` drives the keyboard (Lights over via.py)."""
@@ -61,4 +62,10 @@ class IqunixKeyboard:
 
     def status(self) -> dict:
         (connected,) = self.lights.connected
-        return {"connected": connected, "lights": self.lights.describe()}
+        return {
+            "label": self.label,
+            "icon": self.icon,
+            "has-lcd": False,
+            "connected": connected,
+            "lights": self.lights.describe(),
+        }

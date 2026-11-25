@@ -34,15 +34,10 @@ from PIL import Image
 from ...core.hub import Hub
 from ...core.json_store import JsonSettings
 from ...core.lcd_folder import load_lcd_folder
-from ...core.lights import Lights
 from ...core.look import Looks, cover_lcd
+from ...core.platform import Platform
 from ...core.settings_schema import DEFAULT_KEYS, DEVICE_IDS, migrate
-from ...devices.iqunix_keyboard import IqunixKeyboard, mg65, via
-from ...devices.omen_pc import OmenPc, case_board
-from ...devices.omen_pc import model as omen_model
-from ...devices.omen_pc.lcd_fade import fade_frames
-from ...devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
-from ...devices.omen_pc.ram import RamLights
+from ...devices import build_all
 from ..linux.glib_runtime import GLibRuntime, on_signal
 from ..linux.hidraw import HidrawBus
 from ..linux.ram import AcpiRamBus, find_sticks, find_sticks_dmi
@@ -135,19 +130,15 @@ def _find_sticks() -> list[int]:
     return find_sticks() or find_sticks_dmi()
 
 
-def _ram_lights() -> RamLights | None:
-    """RAM lights if the BIOS can be reached from here, else None."""
+def _ram_bus() -> AcpiRamBus | None:
+    """A way to the RAM through the BIOS if it can be reached from here, else None."""
     if not (ACPI_CALL.exists() and RAM_HELPER.exists()):
         log.info("RAM lights unavailable (no acpi_call module); leaving the RAM alone")
         return None
     spec = importlib.util.spec_from_file_location("rgbhub_ram_helper", RAM_HELPER)
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
-    return RamLights(
-        AcpiRamBus(helper, _find_sticks),
-        gamma=omen_model.LED_GAMMA,
-        background=True,
-    )
+    return AcpiRamBus(helper, _find_sticks)
 
 
 def subject_reader(path: Path, settings) -> Callable[[], None]:
@@ -215,27 +206,16 @@ def main(argv: list[str] | None = None) -> int:
         compose_idle=cover_lcd,  # menu backgrounds and the logo both suit a full screen
     )
     runtime = GLibRuntime()
-    bus = HidrawBus()
+    platform = Platform(
+        "batocera",
+        HidrawBus(),
+        runtime,
+        ram_bus=_ram_bus(),
+        lcd_fade=True,
+    )
     hub = Hub(
         settings,
-        [
-            OmenPc(
-                LcdStreamer(lcd_opener(bus)),
-                Lights(
-                    lambda: case_board.open_board(bus),
-                    omen_model.HIDDEN_ZONES,
-                    omen_model.LED_GAMMA,
-                ),
-                ram=_ram_lights(),
-                display_names=omen_model.DISPLAY_NAMES,
-                fade=fade_frames,
-                watch_file=runtime.watch_file,
-            ),
-            IqunixKeyboard(
-                Lights(via.opener(mg65.MG65, bus), name="Keyboard lights"),
-                display_names=mg65.DISPLAY_NAMES,
-            ),
-        ],
+        build_all(platform),
         looks=looks,
         scheduler=runtime,
     )

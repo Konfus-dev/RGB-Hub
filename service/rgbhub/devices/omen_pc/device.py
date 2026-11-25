@@ -31,6 +31,7 @@ LCD_FADE_INTERVAL_MS = 45  # time between those frames (about 0.36 s in all)
 class OmenPc:
     id = DEVICE_ID
     label = "OMEN-PC"
+    icon = "computer-symbolic"
 
     def __init__(
         self,
@@ -148,6 +149,9 @@ class OmenPc:
     def status(self) -> dict:
         case, *ram = self.lights.connected
         return {
+            "label": self.label,
+            "icon": self.icon,
+            "has-lcd": True,
             "connected": bool(self._streamer.connected or case or any(ram)),
             "lcd": self._streamer.connected,
             "case": case,
