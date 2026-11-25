@@ -6,14 +6,15 @@ https://github.com/Xedecimal/omen-led-lcd (PROTOCOL_NOTES.md) and were
 confirmed on an OMEN 45L GT22-3xxx, LCD firmware V3.05.024.
 """
 
+from ...core.constants import LCD_SIZE, MAX_JPEG_BYTES, RECONNECT_INTERVAL_S
 from ...core.interfaces import HidMatch
+
+__all__ = ["LCD_SIZE", "MAX_JPEG_BYTES", "RECONNECT_INTERVAL_S"]  # re-exported, see core/constants
 
 # --- Cooler LCD ("LCD-PUMP", USB 03f0:7397) ---------------------------------
 # The LCD exposes two HID interfaces. The one we want has this vendor usage
 # page; the other is a mouse-class interface that must never be written to.
 LCD_MATCH = HidMatch(0x03F0, 0x7397, usage_page=0xFF1A)
-
-LCD_SIZE = 480  # the screen is 480x480 pixels
 
 SHORT_REPORT_LEN = 64  # report ID 1, including the ID byte
 LONG_REPORT_LEN = 1024  # report ID 2 going out, including the ID byte
@@ -38,9 +39,7 @@ FRAME_CHUNK_INDEX_OFFSET = 8  # 1 byte, starts at 0 for each JPEG
 FRAME_CHUNK_LEN_OFFSET = 9  # 2 bytes, big-endian: size of this chunk
 CHUNK_DATA_OFFSET = 11
 CHUNK_DATA_LEN = 1013
-MAX_JPEG_BYTES = 60000  # stays inside the 2-byte length field with margin
 
 # --- Timing ------------------------------------------------------------------
 CLAIM_INTERVAL_MS = 1000  # HP's software repeats the claim about once a second
 FRAME_INTERVAL_MS = 500  # the screen forgets the image unless it is re-sent
-RECONNECT_INTERVAL_S = 5

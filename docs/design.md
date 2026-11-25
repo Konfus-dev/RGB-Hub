@@ -240,7 +240,7 @@ had then becomes the first Default.
 
 USB `320f:5055`, IQUNIX MG65. Its interface with usage page `0xFF60`,
 usage `0x61` is VIA's raw HID (32-byte reports). It answers VIA protocol
-11 and keeps its lights on the "RGB matrix" channel (3). `backends/via.py`
+11 and keeps its lights on the "RGB matrix" channel (3). `devices/iqunix_keyboard/via.py`
 sends only:
 
 | Command | Meaning |

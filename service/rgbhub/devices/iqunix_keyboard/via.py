@@ -147,8 +147,9 @@ class _Keyboard:
 
     def _drain(self) -> None:
         """Read and drop the keyboard's answers, so answers never pile up."""
-        while self._port.read(REPLY_WAIT_S) is not None:
-            pass
+        wait = REPLY_WAIT_S  # wait for the first answer only, then take what is there
+        while self._port.read(wait) is not None:
+            wait = 0
 
     def _set(self, value_id: int, *data: int) -> None:
         if self._sent.get(value_id) == data:

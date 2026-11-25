@@ -11,9 +11,10 @@ Shapes described elsewhere, next to the code that uses them:
 - a lighting client (core/lights.py): `devices`, `update()`, `disconnect()`,
   optionally `save()`; each device has `name`, `modes`, `zones`,
   `set_mode()`, `set_colors()`, optionally `forget()`. OpenRGB's client fits
-  as it is; devices/omen_pc/case_board.py and devices/iqunix_keyboard/via.py are two more.
-- an LCD port (core/lcd_streamer.py): `write(bytes)` and `close()`.
-- a RAM sender (core/ram.py): a function taking a list of register writes.
+  as it is; devices/omen_pc/case_board.py and
+  devices/iqunix_keyboard/via.py are two more.
+- an LCD port (devices/omen_pc/lcd_streamer.py): `write(bytes)` and `close()`.
+- a RAM sender (devices/omen_pc/ram.py): a function taking a list of register writes.
 
 Shapes described here:
 - Settings, Scheduler (and ManualScheduler for tests), Runtime: the front end's

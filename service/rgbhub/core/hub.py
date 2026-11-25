@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ..devices.omen_pc import lcd_constants as c
+from . import constants as c
 from .interfaces import ManualScheduler, Scheduler, Settings
 from .look import Look, Looks
 from .settings_schema import DEFAULT_KEYS, parse_default

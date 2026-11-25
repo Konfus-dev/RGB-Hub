@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image, ImageSequence
 
-from ..devices.omen_pc.lcd_constants import MAX_JPEG_BYTES
+from .constants import MAX_JPEG_BYTES
 from .look import Animation
 
 log = logging.getLogger(__name__)

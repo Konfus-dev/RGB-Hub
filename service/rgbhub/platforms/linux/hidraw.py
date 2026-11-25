@@ -73,9 +73,7 @@ class HidrawPort:
 class HidrawBus:
     """Finds and opens HID interfaces under /dev/hidrawN."""
 
-    def __init__(
-        self, sys_root: Path = Path("/sys/class/hidraw"), dev_root: Path = Path("/dev")
-    ):
+    def __init__(self, sys_root: Path = Path("/sys/class/hidraw"), dev_root: Path = Path("/dev")):
         self._sys_root = sys_root
         self._dev_root = dev_root
 
