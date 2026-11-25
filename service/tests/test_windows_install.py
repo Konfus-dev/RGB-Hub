@@ -866,3 +866,33 @@ def test_uninstall_never_deletes_through_links():
     body = text[text.index("function Remove-Folder") :]
     assert body.index("Find-Reparse $Folder") < body.index("Remove-Item -LiteralPath $Folder")
     assert "Remove-Folder $Roaming" in text
+
+
+def cleanup_function() -> str:
+    text = (INSTALL / "install-windows.sh").read_text()
+    start = text.index("cleanup() {")
+    return text[start : text.index("\n}\n", start) + 3]
+
+
+def test_cleanup_remounts_read_only_even_when_every_earlier_step_fails(tmp_path):
+    """The exit trap runs under `set -e`. A failing restore (or sync, or rm) must not
+    stop it before Windows is made read-only again. Commands are fakes that log."""
+    log = tmp_path / "log"
+    script = f"""set -euo pipefail
+mount() {{ echo "mount $*" >> "{log}"; }}
+umount() {{ echo "umount $*" >> "{log}"; }}
+sync() {{ echo sync >> "{log}"; return 1; }}
+rm() {{ echo "rm $*" >> "{log}"; return 1; }}
+restore_program_files() {{ return 1; }}
+tmp=/fake/tmp; mounted_here=1; made_rw=1; pf_new=/fake/pf_new; mnt=/fake/mnt
+{cleanup_function()}
+trap cleanup EXIT
+exit 3
+"""
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 3, done.stderr  # the original status survives
+    lines = log.read_text().splitlines()
+    assert "mount -o remount,ro /fake/mnt" in lines
+    assert "umount /fake/mnt" in lines
+    assert "rm -rf /fake/tmp" in lines
+    assert lines.index("mount -o remount,ro /fake/mnt") < lines.index("umount /fake/mnt")

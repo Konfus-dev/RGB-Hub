@@ -104,13 +104,15 @@ pf_old=
 cleanup() {
     local status=$?
     trap - EXIT
+    # Under `set -e` one failing step would end the trap early. Every step here
+    # must run, above all the one that makes Windows read-only again.
     if [[ -n $pf_new ]]; then
-        rm -rf "$pf_new"  # a half-built Program Files copy; the old one is untouched
+        rm -rf "$pf_new" || true  # a half-built Program Files copy; the old one is untouched
     fi
-    restore_program_files
+    restore_program_files || true
 
     if [[ -n $made_rw ]]; then
-        sync
+        sync || true
         if ! mount -o remount,ro "$mnt"; then
             echo "WARNING: could not make $mnt read-only again; run: sudo mount -o remount,ro $mnt" >&2
         fi
@@ -119,7 +121,7 @@ cleanup() {
         umount "$mnt" || echo "WARNING: could not unmount $mnt" >&2
     fi
     if [[ -n $tmp ]]; then
-        rm -rf "$tmp"
+        rm -rf "$tmp" || true
     fi
     exit "$status"
 }
