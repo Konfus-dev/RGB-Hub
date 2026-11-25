@@ -6,7 +6,9 @@ Each system has a module here (`gnome`, `batocera`, `windows`) providing:
 - `default_root() -> Path`: where versions and the update state live.
 - `build(root: Path) -> Layout`: the layout for that root.
 
-The updater core (`flow.update_once`) only talks to the `Layout` below.
+The updater core (`flow.update_once`) only talks to the `Layout` below. A
+layout may also have `paused() -> bool`; while it returns True, `update_once`
+does nothing at all (Ubuntu: `install-user.sh --dev`).
 """
 
 from pathlib import Path

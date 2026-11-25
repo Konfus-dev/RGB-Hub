@@ -88,6 +88,7 @@ class BatoceraLayout:
         self._pid_alive = pid_alive
         self._kill = kill
         self._old_pid: int | None = None
+        self._activated: Path | None = None
 
     def _pid(self) -> int | None:
         try:
@@ -109,6 +110,9 @@ class BatoceraLayout:
             log.warning("self-check: %s", (done.stderr or done.stdout or "").strip()[-300:])
         return done.returncode == 0
 
+    def paused(self) -> bool:
+        return False
+
     def privileged_changes(self, old: Path | None, new: Path) -> list[str]:
         return []  # everything already runs as root
 
@@ -117,7 +121,6 @@ class BatoceraLayout:
 
     def activate(self, version: Path) -> None:
         version = Path(version)
-        refresh_updater_copy(version, self.root)
         self._install_hooks(version)
         tmp = self.current_txt.with_name(".current.txt.tmp")
         with open(tmp, "w", encoding="ascii") as f:
@@ -125,6 +128,7 @@ class BatoceraLayout:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, self.current_txt)
+        self._activated = version
 
     def _install_hooks(self, version: Path) -> None:
         """Copy the service script and hooks of `version` where Batocera looks for them.
@@ -169,7 +173,14 @@ class BatoceraLayout:
         else:
             return False
         self._sleep(wait_s)
-        return self._pid() == pid and self._pid_alive(pid)
+        healthy = self._pid() == pid and self._pid_alive(pid)
+        if healthy and self._activated is not None:
+            # Only a version seen working gets to replace the updater.
+            try:
+                refresh_updater_copy(self._activated, self.root, "batocera")
+            except Exception as e:
+                log.warning("kept the old updater: %s", e)
+        return healthy
 
     def busy(self) -> bool:
         """A game is running (the game hook writes its name, and empties it at the end)."""

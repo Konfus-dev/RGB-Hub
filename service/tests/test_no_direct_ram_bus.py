@@ -327,10 +327,11 @@ ALLOWED_PROGRAMS = {
     ),
     "service/rgbhub/platforms/windows/launcher.py": "the hub itself, in a child Python",
     "service/rgbhub/updater/layouts/gnome.py": (
-        "updater (Ubuntu): venv + pip for a version, its self-check, systemctl --user for "
-        "rgbhub.service, notify-send, and systemd-run of the approval prompt (pkexec setup.sh)"
+        "updater (Ubuntu): venv + pip for a version, its self-check, systemctl --user (restart, "
+        "show, daemon-reload), notify-send, systemd-run of the approval prompt (pkexec setup.sh)"
     ),
     "service/rgbhub/updater/layouts/batocera.py": "updater (Batocera): a version's self-check",
+    "service/rgbhub/updater/stable.py": "updater: its own new copy, once, with --check",
 }
 STARTS_PROGRAM = re.compile(r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*)\b")
 
@@ -376,6 +377,15 @@ def test_the_update_layouts_start_programs_in_one_place():
         assert re.findall(r"\bsubprocess\.\w+\(", text) == ["subprocess.run("], name
         assert "return subprocess.run(cmd, check=False, **kw)" in text
         assert "shell=True" not in text
+
+
+def test_the_stable_updater_copy_only_runs_itself():
+    text = dict(FILES)["service/rgbhub/updater/stable.py"]
+    assert re.findall(r"\bsubprocess\.\w+\(", text) == ["subprocess.run("]
+    assert (
+        '[sys.executable, "-I", str(Path(folder) / "run.py"), "--platform", platform, "--check"]'
+        in text
+    )
 
 
 def test_the_windows_helper_starts_only_powershell():

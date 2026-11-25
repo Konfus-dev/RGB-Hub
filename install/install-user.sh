@@ -97,7 +97,9 @@ else
     # --system-site-packages lets it use Ubuntu's own Pillow and GTK bindings.
     # Rebuilt when it is missing or broken (an Ubuntu upgrade that brings a
     # new Python leaves the old environment unable to run).
-    if ! "$repo/.venv/bin/python" -c "import pip" 2>/dev/null; then
+    # Also rebuilt when it was made without the system packages.
+    if ! "$repo/.venv/bin/python" -c "import pip" 2>/dev/null ||
+        ! grep -Eqs '^include-system-site-packages *= *true' "$repo/.venv/pyvenv.cfg"; then
         python3 -m venv --clear --system-site-packages "$repo/.venv"
     fi
     "$repo/.venv/bin/pip" install --quiet --editable "$repo/service[gnome]"
@@ -150,7 +152,7 @@ fi
 # The RAM helper runs as root from its own copy, which only setup.sh updates.
 installed_helper=/usr/local/lib/rgbhub/rgbhub_ram_helper.py
 if [[ -e "$installed_helper" ]] && ! cmp -s "$src/helper/rgbhub_ram_helper.py" "$installed_helper"; then
-    echo "NOTE: the RAM helper has changed. To update it: sudo bash $src/install/setup.sh --no-apt"
+    echo "NOTE: the RAM helper has changed. To update it: pkexec /usr/bin/bash $src/install/setup.sh --no-apt"
 fi
 
 echo "==> Background services"
@@ -159,11 +161,9 @@ install -m 0644 "$src/systemd/openrgb-server.service" "$src/systemd/rgbhub.servi
     "$src/systemd/rgbhub-update.service" "$src/systemd/rgbhub-update.timer" "$units/"
 systemctl --user daemon-reload
 systemctl --user enable openrgb-server.service rgbhub.service
-if [[ $mode == release ]]; then
-    systemctl --user enable --now rgbhub-update.timer
-else
-    systemctl --user disable --now rgbhub-update.timer 2>/dev/null || true
-fi
+# No update run while this script stops and starts the hub (it could take the
+# restart for a crash and mark a good version bad); switched on at the end.
+systemctl --user disable --now rgbhub-update.timer 2>/dev/null || true
 # Stop our service first, so it lets go of OpenRGB before OpenRGB restarts.
 # Otherwise OpenRGB cannot reopen its port for a minute or two.
 systemctl --user stop rgbhub.service
@@ -181,6 +181,11 @@ python3 "$src/install/enable-gnome-extension.py" "$uuid" --remove omenrgb@konfus
 
 # The environment from before versions (editable install of the repo).
 rm -rf "$root/venv"
+
+if [[ $mode == release ]]; then
+    echo "==> Updates: looking for a newer main on GitHub every hour"
+    systemctl --user enable --now rgbhub-update.timer
+fi
 
 echo
 echo "Done. If this is the first install (or the first since the rename"

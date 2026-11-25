@@ -611,3 +611,29 @@ def test_updater_imports_only_stdlib_and_itself():
                     or (name.startswith("rgbhub.updater."))
                 )
                 assert ok, f"{path.name} imports {name}"
+
+
+def test_check_only_loads_the_layout(monkeypatch, capsys, tmp_path):
+    def no_update(*a, **k):
+        raise AssertionError("--check must not run an update")
+
+    monkeypatch.setattr(updater_main, "update_once", no_update)
+    monkeypatch.setattr(updater_main, "GitHub", no_update)
+    for platform in ("gnome", "batocera"):
+        assert updater_main.main(["--platform", platform, "--check", "--root", str(tmp_path)]) == 0
+    assert "ok" in capsys.readouterr().out
+    assert list(tmp_path.iterdir()) == []  # nothing written
+
+
+def test_paused_layout_means_no_work_at_all(store):
+    class Paused(FakeLayout):
+        def paused(self):
+            return True
+
+    class NoNetwork(FakeGitHub):
+        def latest(self, branch="main"):
+            raise AssertionError("no network while paused")
+
+    layout = Paused()
+    assert update_once(NoNetwork(), store, layout, health_wait_s=0) == "paused"
+    assert layout.calls == [] and layout.activated == []

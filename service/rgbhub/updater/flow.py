@@ -23,12 +23,19 @@ def _installed(store, layout) -> str | None:
 
 
 def update_once(gh, store, layout, health_wait_s: int = 60) -> str:
-    """Run one check. Returns "up-to-date", "not-ahead", "busy", "bad-commit",
+    """Run one check. Returns "paused", "up-to-date", "not-ahead", "busy", "bad-commit",
     "updated", "rolled-back" or "failed".
+
+    "paused": the layout says updating is switched off (`paused()`, optional;
+    Ubuntu's `install-user.sh --dev`); nothing is read, fetched or changed.
 
     Network and download problems log one line and return "failed" with the
     current version and the state file untouched; the next run tries again.
     Another run already in progress means "busy" and nothing is touched."""
+    paused = getattr(layout, "paused", None)
+    if paused is not None and paused():
+        log.info("updates are paused")
+        return "paused"
     try:
         with store.locked() as got:
             if not got:

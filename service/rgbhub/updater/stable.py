@@ -7,10 +7,16 @@ version's `rgbhub/updater/` here (with an empty `rgbhub` package around it) and
 writes `run.py`, which puts this folder on `sys.path` and starts the updater:
 
     python3 -I <root>/updater/run.py --platform gnome --once
+
+A new copy is only swapped in after it has run (`run.py --platform X --check`:
+imports the updater and that platform's layout), so a broken updater on
+`main` can never replace the working one and stop all later updates.
 """
 
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from rgbhub.updater import UpdateError
@@ -40,12 +46,35 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-def refresh_updater_copy(version: Path, root: Path) -> Path:
+CHECK_TIMEOUT_S = 60
+
+
+def check_copy(folder: Path, platform: str) -> str | None:
+    """Run the copy in `folder` once with `--check`; None if it works, else why not."""
+    try:
+        done = subprocess.run(
+            [sys.executable, "-I", str(Path(folder) / "run.py"), "--platform", platform, "--check"],
+            capture_output=True,
+            text=True,
+            timeout=CHECK_TIMEOUT_S,
+            cwd=folder,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return str(e)
+    if done.returncode != 0:
+        lines = (done.stderr or done.stdout or "").strip().splitlines()
+        return f"exit {done.returncode}: {lines[-1] if lines else 'no output'}"
+    return None
+
+
+def refresh_updater_copy(version: Path, root: Path, platform: str) -> Path:
     """Replace `<root>/updater/` with the updater of `version`; returns that folder.
 
-    The new copy is built beside the old one and swapped in by renames, so a
-    crash leaves either the old or the new copy (plus a `.updater.*` leftover
-    that the next refresh deletes)."""
+    The new copy is built beside the old one, run once with `--check`, and only
+    then swapped in by renames; if the check fails the old copy stays and
+    UpdateError is raised. A crash leaves either the old or the new copy (plus
+    a `.updater.*` leftover that the next refresh deletes)."""
     source = Path(version) / "service" / "rgbhub" / "updater"
     if not (source / "__main__.py").is_file():
         raise UpdateError(f"{version} has no updater to copy")
@@ -59,6 +88,10 @@ def refresh_updater_copy(version: Path, root: Path) -> Path:
     shutil.copytree(source, new / "rgbhub" / "updater", ignore=skip)
     (new / "rgbhub" / "__init__.py").write_text(PACKAGE_INIT, encoding="utf-8")
     (new / "run.py").write_text(RUN_PY, encoding="utf-8")
+    problem = check_copy(new, platform)
+    if problem is not None:
+        _remove(new)
+        raise UpdateError(f"the updater of {Path(version).name[:7]} does not run ({problem})")
     if dest.exists() or dest.is_symlink():
         os.rename(dest, old)
     os.rename(new, dest)

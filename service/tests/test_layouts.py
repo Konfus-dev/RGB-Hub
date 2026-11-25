@@ -19,6 +19,7 @@ from rgbhub.updater import install as install_mod
 from rgbhub.updater.flow import update_once
 from rgbhub.updater.layouts.batocera import BatoceraLayout
 from rgbhub.updater.layouts.gnome import UUID, GnomeLayout
+from rgbhub.updater.stable import check_copy, refresh_updater_copy
 from rgbhub.updater.store import Store
 
 A = "a" * 40
@@ -136,10 +137,18 @@ def test_gnome_dev_marker_pauses(tmp_path):
     assert layout.busy()
     with pytest.raises(UpdateError):
         layout.activate(layout.root / "versions" / A)
-    gh = FakeGitHub(latest=B)
-    assert update_once(gh, store, layout, health_wait_s=0) == "busy"
+    store.set_pending(A, B)  # even something to "recover" is left alone
+
+    class NoNetwork(FakeGitHub):
+        def latest(self, branch="main"):
+            raise AssertionError("no network while paused")
+
+    gh = NoNetwork(latest=B)
+    assert update_once(gh, store, layout, health_wait_s=0) == "paused"
     assert gh.downloads == []
     assert os.readlink(layout.current) == str(working_copy)
+    assert Store(layout.root).load()["pending"] == {"sha": A, "from": B}
+    assert not (layout.root / "update.lock").exists()
 
 
 def test_gnome_privileged_changes_detects_helper_diff(tmp_path):
@@ -176,9 +185,76 @@ def test_gnome_request_privileged_asks_first_then_runs_setup(tmp_path):
     script = cmd[cmd.index("-c") + 1]
     assert "notify-send --wait" in script and "--action=approve=Approve" in script
     assert "pkexec /usr/bin/bash" in script and "--no-apt" in script
-    assert cmd[-3] == "RGB-Hub update needs your password"
-    assert "helper/rgbhub_ram_helper.py" in cmd[-2]
-    assert cmd[-1] == str(new / "install/setup.sh")
+    assert "exec pkexec" not in script  # the shell stays pkexec's parent
+    title, body, setup, _, fallback = cmd[-5:]
+    assert title == "RGB-Hub update needs your password"
+    assert "helper/rgbhub_ram_helper.py" in body
+    assert setup == str(new / "install/setup.sh")
+    assert f"pkexec /usr/bin/bash {setup} --no-apt" in fallback
+
+
+def _approve(tmp_path, *, click: str, pkexec_status: int):
+    """Run the approval script with fake notify-send and pkexec; returns their calls."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    calls = tmp_path / "calls"
+    (bin_ / "notify-send").write_text(
+        f'#!/bin/sh\necho "notify-send $*" >>{calls}\ncase "$*" in *--wait*) echo {click} ;; esac\n'
+    )
+    (bin_ / "pkexec").write_text(f'#!/bin/sh\necho "pkexec $*" >>{calls}\nexit {pkexec_status}\n')
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+    run = FakeRun()
+    layout = gnome(tmp_path, run=run)
+    new = make_version(layout.root, B)
+    layout.request_privileged(new, ["install/70-rgb-hub.rules"])
+    ((cmd, _),) = run.calls
+    sh_args = cmd[cmd.index("/usr/bin/sh") :]
+    env = dict(os.environ, PATH=f"{bin_}:{os.environ['PATH']}")
+    subprocess.run(sh_args, env=env, check=False, timeout=30)
+    return calls.read_text().splitlines() if calls.exists() else [], new
+
+
+def test_gnome_approval_runs_setup_after_approve(tmp_path):
+    calls, new = _approve(tmp_path, click="approve", pkexec_status=0)
+    assert calls[1] == f"pkexec /usr/bin/bash {new}/install/setup.sh --no-apt"
+    assert len(calls) == 2  # no second notification
+
+
+def test_gnome_approval_dismissed_runs_nothing(tmp_path):
+    calls, _ = _approve(tmp_path, click="", pkexec_status=0)
+    assert len(calls) == 1 and calls[0].startswith("notify-send --wait")
+
+
+@pytest.mark.parametrize("status", [126, 127])
+def test_gnome_approval_without_password_dialog_tells_the_command(tmp_path, status):
+    calls, new = _approve(tmp_path, click="approve", pkexec_status=status)
+    assert calls[1].startswith("pkexec ")
+    assert len(calls) == 3
+    assert calls[2].startswith("notify-send --app-name=RGB-Hub RGB-Hub could not install")
+    assert f"pkexec /usr/bin/bash {new}/install/setup.sh --no-apt" in calls[2]
+
+
+def test_gnome_approval_when_pkexec_is_missing_tells_the_command(tmp_path):
+    bin_ = tmp_path / "bin"
+    calls, new = None, None
+    # pkexec not on PATH at all: the shell's "not found" (127) leads to the same help.
+    bin_.mkdir()
+    log = tmp_path / "calls"
+    (bin_ / "notify-send").write_text(
+        f'#!/bin/sh\necho "notify-send $*" >>{log}\ncase "$*" in *--wait*) echo approve ;; esac\n'
+    )
+    (bin_ / "notify-send").chmod(0o755)
+    run = FakeRun()
+    layout = gnome(tmp_path, run=run)
+    new = make_version(layout.root, B)
+    layout.request_privileged(new, ["install/70-rgb-hub.rules"])
+    ((cmd, _),) = run.calls
+    sh_args = cmd[cmd.index("/usr/bin/sh") :]
+    subprocess.run(sh_args, env={"PATH": str(bin_)}, check=False, timeout=30)
+    calls = log.read_text().splitlines()
+    assert len(calls) == 2
+    assert f"pkexec /usr/bin/bash {new}/install/setup.sh --no-apt" in calls[1]
 
 
 def test_gnome_prepare_and_self_check_use_the_versions_venv(tmp_path):
@@ -330,12 +406,32 @@ def test_batocera_service_script_reads_current(tmp_path):
 # ---- stable updater copy -------------------------------------------------------
 
 
+def _healthy(layout, tmp_path):
+    """Make the layout's next health check pass."""
+    if isinstance(layout, GnomeLayout):
+        layout._run = FakeRun(states=["ActiveState=active\nNRestarts=0"])
+    else:
+        pidfile = tmp_path / "run/rgb-hub.pid"
+        pidfile.parent.mkdir(parents=True, exist_ok=True)
+        pidfile.write_text("4242")
+        layout._old_pid = 1
+        layout._pid_alive = lambda pid: True
+
+
 def test_stable_updater_copy_refreshed_on_activate(tmp_path):
+    """Refreshed once the hub runs healthy on the new version, never at the switch."""
     for layout in (gnome(tmp_path), batocera(tmp_path)):
-        layout.activate(make_version(layout.root, A, marker="first"))
         copy = layout.root / "updater"
+        layout.activate(make_version(layout.root, A, marker="first"))
+        assert not copy.exists()  # switching alone does not touch it
+        _healthy(layout, tmp_path)
+        assert layout.hub_healthy(0)
         assert (copy / "rgbhub/updater/marker.txt").read_text() == "first"
+
         layout.activate(make_version(layout.root, B, marker="second"))
+        assert (copy / "rgbhub/updater/marker.txt").read_text() == "first"
+        _healthy(layout, tmp_path)
+        assert layout.hub_healthy(0)
         assert (copy / "rgbhub/updater/marker.txt").read_text() == "second"
         assert not list(layout.root.glob(".updater.*"))
         # It runs on its own, with nothing but the standard library.
@@ -346,7 +442,59 @@ def test_stable_updater_copy_refreshed_on_activate(tmp_path):
             cwd=tmp_path,
         )
         assert done.returncode == 0, done.stderr
-        assert "--platform" in done.stdout
+        assert "--platform" in done.stdout and "--check" in done.stdout
+
+
+def test_stable_updater_copy_not_refreshed_when_unhealthy(tmp_path):
+    layout = gnome(tmp_path)
+    layout.activate(make_version(layout.root, A))
+    layout._run = FakeRun(states=["ActiveState=failed\nNRestarts=0"])
+    assert not layout.hub_healthy(0)
+    assert not (layout.root / "updater").exists()
+
+
+@pytest.mark.parametrize("platform", ["gnome", "batocera"])
+def test_broken_updater_never_replaces_the_working_one(tmp_path, platform):
+    root = tmp_path / "root"
+    good = make_version(root, A, marker="good")
+    refresh_updater_copy(good, root, platform)
+    bad = make_version(root, B, marker="bad")
+    (bad / "service/rgbhub/updater/flow.py").write_text("this is not python(\n")
+    with pytest.raises(UpdateError, match="does not run"):
+        refresh_updater_copy(bad, root, platform)
+    assert (root / "updater/rgbhub/updater/marker.txt").read_text() == "good"
+    assert not list(root.glob(".updater.*"))
+    assert check_copy(root / "updater", platform) is None
+
+
+def test_broken_updater_is_kept_out_after_a_healthy_switch(tmp_path):
+    """The new version runs fine but its updater does not: the old updater stays."""
+    layout = gnome(tmp_path)
+    layout.activate(make_version(layout.root, A, marker="good"))
+    _healthy(layout, tmp_path)
+    assert layout.hub_healthy(0)
+    bad = make_version(layout.root, B)
+    (bad / "service/rgbhub/updater/__main__.py").write_text("raise SystemExit(3)\n")
+    layout.activate(bad)
+    _healthy(layout, tmp_path)
+    assert layout.hub_healthy(0)  # the hub is fine; only the updater copy is refused
+    assert (layout.root / "updater/rgbhub/updater/marker.txt").read_text() == "good"
+
+
+def test_gnome_activate_installs_changed_user_units(tmp_path):
+    run = FakeRun()
+    layout = gnome(tmp_path, run=run, units=tmp_path / "units")
+    v = make_version(layout.root, A)
+    (v / "systemd/rgbhub.service").write_text("[Service]\nExecStart=new\n")
+    (v / "systemd/rgbhub-update.timer").write_text("[Timer]\n")
+    (tmp_path / "units").mkdir()
+    (tmp_path / "units/rgbhub-update.timer").write_text("[Timer]\n")  # already the same
+    layout.activate(v)
+    assert (tmp_path / "units/rgbhub.service").read_text() == "[Service]\nExecStart=new\n"
+    assert [c for c, _ in run.calls] == [["/usr/bin/systemctl", "--user", "daemon-reload"]]
+    run.calls.clear()
+    layout.activate(v)  # nothing differs now: no reload
+    assert run.calls == []
 
 
 # ---- first install ---------------------------------------------------------------
@@ -386,6 +534,59 @@ def test_install_records_the_version_with_the_store(tmp_path, monkeypatch):
     assert install_mod.main([*args, "--zip", str(version_zip(tmp_path, B)), "--sha", B]) == 0
     assert (layout.root / "versions" / B).stat().st_ino == inode
     assert Store(layout.root).load()["previous"] == A
+
+
+class ZipGitHub:
+    """A fake GitHub whose main is `sha`, serving `zip_path`; or unreachable."""
+
+    def __init__(self, sha=None, zip_path=None):
+        self.sha, self.zip_path = sha, zip_path
+
+    def latest(self, branch="main"):
+        if self.sha is None:
+            raise UpdateError("could not reach GitHub (fake)")
+        return self.sha
+
+    def download(self, sha, dest):
+        assert sha == self.sha
+        dest.write_bytes(self.zip_path.read_bytes())
+
+
+def test_install_from_github_installs_main(tmp_path, monkeypatch):
+    layout = batocera(tmp_path)
+    monkeypatch.setattr(install_mod, "load_layout", lambda platform, root: (layout, layout.root))
+    monkeypatch.setattr(install_mod, "GitHub", lambda: ZipGitHub(B, version_zip(tmp_path, B)))
+    args = ["--platform", "batocera", "--root", str(layout.root), "--no-check"]
+    assert install_mod.main([*args, "--from-github"]) == 0
+    assert layout.current_commit() == B
+    assert Store(layout.root).load()["current"] == B
+    assert (layout.root / "updater/run.py").is_file()
+
+
+def test_install_from_github_offline_fails_and_installs_nothing(tmp_path, monkeypatch, capsys):
+    layout = batocera(tmp_path)
+    monkeypatch.setattr(install_mod, "load_layout", lambda platform, root: (layout, layout.root))
+    monkeypatch.setattr(install_mod, "GitHub", lambda: ZipGitHub())
+    assert install_mod.main(["--platform", "batocera", "--from-github", "--no-check"]) == 1
+    assert "could not reach GitHub" in capsys.readouterr().err
+    assert not (layout.root / "versions").exists()
+    assert not (layout.root / "current.txt").exists()
+
+
+def test_install_with_a_broken_updater_changes_nothing(tmp_path, monkeypatch):
+    layout = batocera(tmp_path)
+    monkeypatch.setattr(install_mod, "load_layout", lambda platform, root: (layout, layout.root))
+    src = make_version(tmp_path / "broken", A)
+    (src / "service/rgbhub/updater/store.py").write_text("import nothing_like_this\n")
+    z = tmp_path / "broken.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for path in sorted(src.rglob("*")):
+            if path.is_file():
+                zf.write(path, f"top/{path.relative_to(src)}")
+    args = ["--platform", "batocera", "--zip", str(z), "--sha", A, "--no-check"]
+    assert install_mod.main(args) == 1
+    assert layout.current_commit() is None
+    assert not (layout.root / "updater").exists()
 
 
 def test_install_failed_self_check_changes_nothing(tmp_path, monkeypatch):
@@ -442,7 +643,14 @@ def test_install_batocera_script_writes_the_release_layout(tmp_path):
     ):
         pytest.skip("needs a git checkout")
     repo = tmp_path / "repo"
-    head = _commit_copy_of_this_checkout(repo)
+    head = _commit_copy_of_this_checkout(repo)  # main
+    script = repo / "frontends/batocera/services/rgb_hub"
+    on_main = script.read_text()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "checkout", "-q", "-b", "other"], check=True)
+    script.write_text(on_main + "# only on another branch\n")
+    subprocess.run([*git, "commit", "-q", "-am", "other", "--no-gpg-sign"], check=True)
+    script.write_text(on_main + "# not committed\n")
     (repo / "uncommitted.txt").write_text("not installed\n")
     share = tmp_path / "share"
     app = share / "system/rgb-hub"
@@ -461,7 +669,8 @@ def test_install_batocera_script_writes_the_release_layout(tmp_path):
     assert (app / "updater/run.py").is_file()
     assert Store(app).load()["current"] == head
     assert not (app / "service").exists() and not (app / "helper").exists()
-    assert (share / "system/services/rgb_hub").is_file()
+    # The service script and hooks come from the installed main, not the checkout.
+    assert (share / "system/services/rgb_hub").read_text() == on_main
     assert (share / "system/configs/rgb-hub/settings.json").is_file()
 
     # Again: same version, kept as it is.
@@ -474,8 +683,9 @@ def test_install_batocera_script_writes_the_release_layout(tmp_path):
     assert sorted(p.name for p in (app / "versions").iterdir()) == [head]
 
 
-def test_install_batocera_script_without_git_installs_unversioned(tmp_path):
-    """A downloaded copy (no .git): installed as it is; the updater leaves it alone."""
+def test_install_batocera_script_without_git_and_offline_fails_clearly(tmp_path):
+    """A downloaded copy (no .git) installs main from GitHub; offline it stops
+    with a clear message and installs nothing (never a copy that can't update)."""
     if shutil.which("git") is None:
         pytest.skip("needs git to list the files")
     repo = tmp_path / "repo"
@@ -483,15 +693,26 @@ def test_install_batocera_script_without_git_installs_unversioned(tmp_path):
     shutil.rmtree(repo / ".git")
     share = tmp_path / "share"
     (share / "system").mkdir(parents=True)
+    dead = "http://127.0.0.1:9"  # nothing listens there: GitHub is unreachable
+    env = dict(
+        os.environ,
+        GIT_CEILING_DIRECTORIES=str(tmp_path),
+        https_proxy=dead,
+        HTTPS_PROXY=dead,
+        no_proxy="",
+        NO_PROXY="",
+    )
     done = subprocess.run(
         ["bash", str(repo / "install/install-batocera.sh"), str(share)],
         capture_output=True,
         text=True,
-        env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(tmp_path)),
+        env=env,
+        timeout=120,
     )
-    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "could not reach GitHub" in done.stderr
+    assert "ERROR: could not install RGB Hub from GitHub" in done.stderr
     app = share / "system/rgb-hub"
-    assert (app / "current.txt").read_text().strip() == "unversioned"
-    assert _app_dir(app) == str(app / "versions/unversioned")
-    assert (app / "versions/unversioned/service/rgbhub/__main__.py").is_file()
-    assert BatoceraLayout(app).current_commit() is None
+    assert not (app / "current.txt").exists()
+    assert not (app / "versions").exists()
+    assert not (share / "system/services/rgb_hub").exists()

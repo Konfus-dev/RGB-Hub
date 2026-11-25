@@ -2,7 +2,9 @@
 """`python -m rgbhub.updater --platform {gnome,batocera,windows} [--once | --loop] [--root PATH]`
 
 `--once` (the default) checks once; `--loop` checks at start, then about every
-hour (3600 s +/- 300 s) and never stops on an error. Logs go to stderr.
+hour (3600 s +/- 300 s) and never stops on an error. `--check` only imports the
+updater and the platform's layout and exits 0 (how a new stable copy proves it
+runs before it replaces the old one). Logs go to stderr.
 """
 
 import argparse
@@ -58,6 +60,7 @@ def main(argv=None, *, sleep=time.sleep) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="check once (default)")
     mode.add_argument("--loop", action="store_true", help="check now, then every hour")
+    mode.add_argument("--check", action="store_true", help="only check that the updater loads")
     parser.add_argument("--root", type=Path, help="install folder (default: the platform's)")
     args = parser.parse_args(argv)
 
@@ -69,6 +72,9 @@ def main(argv=None, *, sleep=time.sleep) -> int:
     except LayoutMissing as e:
         print(f"rgbhub-updater: {e}", file=sys.stderr)
         return 2
+    if args.check:
+        print(f"rgbhub-updater: ok ({args.platform}, {root})")
+        return 0
 
     gh = GitHub()
     store = Store(root)

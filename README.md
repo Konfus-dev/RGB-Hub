@@ -145,8 +145,10 @@ partition mounted:
 sudo bash install/install-batocera.sh /path/to/SHARE
 ```
 
-It installs the commit the checkout is on (changes not yet committed are
-left out) into `/userdata/system/rgb-hub/versions/<commit>/`. Then boot
+It installs the latest commit of the checkout's `main` (changes not
+committed to main are left out; a copy without git history installs the
+newest `main` from GitHub instead) into
+`/userdata/system/rgb-hub/versions/<commit>/`. Then boot
 Batocera and switch **RGB_HUB** on under **Main menu > System
 Settings > Services**. While it is on, it looks for a newer `main` on
 GitHub at start and about every hour, and installs it when no game is

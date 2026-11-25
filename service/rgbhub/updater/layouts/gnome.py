@@ -39,10 +39,26 @@ PRIVILEGED = (
 
 # Runs outside the updater's own unit (which systemd ends with its children):
 # show the notification, and only if the owner clicks Approve ask for the
-# password and run that version's setup.sh.
-APPROVE_SCRIPT = (
-    'answer=$(notify-send --wait --app-name=RGB-Hub --action=approve=Approve "$1" "$2")'
-    ' && [ "$answer" = approve ] && exec pkexec /usr/bin/bash "$3" --no-apt'
+# password and run that version's setup.sh. The shell stays pkexec's parent
+# (no exec) so that, if pkexec cannot ask (no password dialog from here:
+# status 126/127, or it does not run at all) or setup.sh fails, a second
+# notification gives the exact command to run in a terminal.
+#   $1 title  $2 text  $3 setup.sh  $4 fallback title  $5 fallback text
+APPROVE_SCRIPT = """\
+answer=$(notify-send --wait --app-name=RGB-Hub --action=approve=Approve "$1" "$2") || exit 0
+[ "$answer" = approve ] || exit 0
+pkexec /usr/bin/bash "$3" --no-apt
+status=$?
+[ "$status" -eq 0 ] && exit 0
+notify-send --app-name=RGB-Hub "$4" "$5"
+exit "$status"
+"""
+# The user units a version brings; installed without root on activation.
+USER_UNITS = (
+    "rgbhub.service",
+    "openrgb-server.service",
+    "rgbhub-update.service",
+    "rgbhub-update.timer",
 )
 
 
@@ -71,16 +87,19 @@ class GnomeLayout:
         extensions: Path | None = None,
         system: Path = Path("/"),
         user: str | None = None,
+        units: Path | None = None,
     ):
         self.root = Path(root)
         self.current = self.root / "current"
         self.dev_marker = self.root / "dev"
         self.extensions = extensions or Path.home() / ".local/share/gnome-shell/extensions"
         self.system = Path(system)
+        self.units = units or Path.home() / ".config/systemd/user"
         self.user = user or pwd.getpwuid(os.getuid()).pw_name
         self._run = run
         self._sleep = sleep
         self._restarts_before: str | None = None
+        self._activated: Path | None = None
 
     # ---- helpers --------------------------------------------------------------
 
@@ -146,14 +165,16 @@ class GnomeLayout:
             + ". Click Approve to install them; everything else is already updated."
         )
         setup = str(Path(new) / "install" / "setup.sh")
+        fallback_title = "RGB-Hub could not install the approved part"
+        fallback = f"To install it, run this in a terminal: pkexec /usr/bin/bash {setup} --no-apt"
         cmd = ["systemd-run", "--user", "--collect", "--quiet", "--", "/usr/bin/sh", "-c"]
-        self._check([*cmd, APPROVE_SCRIPT, "sh", title, body, setup], "asking for approval")
+        args = [APPROVE_SCRIPT, "sh", title, body, setup, fallback_title, fallback]
+        self._check([*cmd, *args], "asking for approval")
 
     def activate(self, version: Path) -> None:
         if self.paused():
             raise UpdateError("paused: the working copy is installed (install-user.sh --dev)")
         version = Path(version)
-        refresh_updater_copy(version, self.root)
         try:
             target = version.relative_to(self.root)
         except ValueError:
@@ -162,7 +183,34 @@ class GnomeLayout:
         tmp.unlink(missing_ok=True)
         os.symlink(target, tmp)
         os.replace(tmp, self.current)
+        self._activated = version
         self._link_extension()
+        self._install_user_units(version)
+
+    def _install_user_units(self, version: Path) -> None:
+        """Copy the version's user units over differing ones, then `daemon-reload`."""
+        changed = []
+        for name in USER_UNITS:
+            source = version / "systemd" / name
+            if not source.is_file():
+                continue
+            dest = self.units / name
+            data = source.read_bytes()
+            try:
+                if dest.read_bytes() == data:
+                    continue
+            except OSError:
+                pass
+            self.units.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(f".{name}.new")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            changed.append(name)
+        if changed:
+            log.info("installed user units: %s", ", ".join(changed))
+            done = self._run([SYSTEMCTL, "--user", "daemon-reload"])
+            if done.returncode != 0:
+                log.warning("systemctl --user daemon-reload failed (%s)", done.returncode)
 
     def _link_extension(self) -> None:
         """The extension is reached through `current`, so it follows every switch."""
@@ -189,7 +237,14 @@ class GnomeLayout:
             before = self._service_state().get("NRestarts")
         self._sleep(wait_s)
         after = self._service_state()
-        return after.get("ActiveState") == "active" and after.get("NRestarts") == before
+        healthy = after.get("ActiveState") == "active" and after.get("NRestarts") == before
+        if healthy and self._activated is not None:
+            # Only a version seen working gets to replace the updater.
+            try:
+                refresh_updater_copy(self._activated, self.root, "gnome")
+            except Exception as e:
+                log.warning("kept the old updater: %s", e)
+        return healthy
 
     def busy(self) -> bool:
         return self.paused()
