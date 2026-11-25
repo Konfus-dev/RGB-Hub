@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  The RGB Hub settings page, for systems without a settings window of their
+  own (Windows). Served by service/rgbhub/core/web.py on this computer only;
+  it mirrors the GNOME settings window (frontends/gnome-shell/.../prefs.js).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>RGB Hub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>RGB Hub</h1>
+    <nav id="tabs" role="tablist"></nav>
+  </header>
+  <main id="pages"></main>
+  <p id="offline" class="banner" hidden>Lost touch with RGB Hub. Is it still running?</p>
+  <script src="app.js"></script>
+</body>
+</html>
