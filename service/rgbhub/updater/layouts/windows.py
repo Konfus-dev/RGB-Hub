@@ -46,6 +46,8 @@ NEW_START_WAIT_S = 60  # how long the launcher may take to start the new hub
 HTTP_TIMEOUT_S = 10
 # What finish-setup.ps1 installs into Program Files: (folder in a version, files).
 PRIVILEGED = (("helper", "*.py"), ("install/windows", "*.ps1"), ("install/windows", "*.py"))
+# ...except the installer, which runs with the owner's rights (as verify_update.py's list).
+NOT_PRIVILEGED = frozenset({"install.ps1"})
 # Run by the embeddable python.exe: pip from pip.whl (first argument), with the rest.
 PIP_CODE = (
     "import sys; sys.path.insert(0, sys.argv.pop(1)); "
@@ -271,6 +273,8 @@ class WindowsLayout:
         changed = []
         for folder, pattern in PRIVILEGED:
             for source in sorted((Path(new) / folder).glob(pattern)):
+                if source.name in NOT_PRIVILEGED:
+                    continue
                 try:
                     have = (self.program_files / folder / source.name).read_bytes()
                 except OSError:

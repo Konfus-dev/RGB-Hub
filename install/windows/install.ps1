@@ -15,8 +15,9 @@ What it does:
     libraries, current.txt, the updater's copy. launcher.py and pip.whl go
     beside them.
  3. Asks once for admin rights (UAC) and runs that version's finish-setup.ps1
-    -FirstInstall: it copies Python, the RAM helper and the setup scripts into
-    C:\Program Files\RGB-Hub (the helper and scripts checked against GitHub),
+    -FirstInstall: it unpacks Python's download (checksum checked again) and
+    puts the RAM helper and setup scripts into C:\Program Files\RGB-Hub (the
+    helper and scripts checked against GitHub),
     registers the three scheduled tasks, removes OMEN Gaming Hub and switches
     off HP's OMEN services, and starts RGB-Hub.
 Settings start as the defaults; an existing %APPDATA%\rgbhub\settings.json is
@@ -59,7 +60,7 @@ function Test-OtherAccount([bool]$Elevated, [string]$Me, [string]$SignedIn) {
 function Get-InstallState([string]$Root, [bool]$TasksThere) {
     # 'installed'   a version is active and setup finished (the tasks exist)
     # 'unfinished'  a version is active, setup did not finish (the admin prompt was refused?)
-    # 'new'         nothing usable
+    # 'new'         nothing usable (also: no Python or pip.whl)
     $result = @{ State = 'new'; Version = $null }
     $current = Join-Path $Root 'current.txt'
     if (-not (Test-Path -LiteralPath $current)) { return $result }
@@ -67,6 +68,10 @@ function Get-InstallState([string]$Root, [bool]$TasksThere) {
     if ($sha -cnotmatch '^[0-9a-f]{40}$') { return $result }
     $version = Join-Path $Root "versions\$sha"
     if (-not (Test-Path -LiteralPath (Join-Path $version 'install\windows\finish-setup.ps1'))) { return $result }
+    # Without its Python or pip nothing runs: install everything again.
+    foreach ($needed in @('python\python.exe', 'pip.whl')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $needed))) { return $result }
+    }
     $result.Version = $version
     if ($TasksThere) { $result.State = 'installed' } else { $result.State = 'unfinished' }
     return $result
@@ -123,9 +128,8 @@ function Get-Checked($Part, [string]$Folder, [string]$What) {
     return $path
 }
 
-function Install-Python($Pins, [string]$Root, [string]$Temp) {
+function Install-Python($Pins, [string]$Root, [string]$Temp, [string]$Zip) {
     Say '==> Python and pip'
-    $zip = Get-Checked $Pins.python $Temp "Windows' Python $($Pins.python.version)"
     $whl = Get-Checked $Pins.pip $Temp "pip $($Pins.pip.version)"
     $new = Join-Path $Root 'python.new'
     $old = Join-Path $Root 'python.old'
@@ -133,10 +137,9 @@ function Install-Python($Pins, [string]$Root, [string]$Temp) {
     foreach ($leftover in @($new, $old)) {
         if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force }
     }
-    Expand-Archive -LiteralPath $zip -DestinationPath $new
+    Expand-Archive -LiteralPath $Zip -DestinationPath $new
     $pth = Join-Path $new $Pins.python.pth
-    $text = Enable-ImportSite ([IO.File]::ReadAllText($pth))
-    [IO.File]::WriteAllText($pth, $text, [Text.Encoding]::ASCII)
+    Set-Content -LiteralPath $pth -Value (Enable-ImportSite (Get-Content -Raw -LiteralPath $pth)) -Encoding Ascii -NoNewline
     try {
         if (Test-Path -LiteralPath $python) { Rename-Item -LiteralPath $python -NewName 'python.old' }
     } catch {
@@ -162,10 +165,10 @@ function Install-Version([string]$Repo, [string]$Root) {
     if ($status -ne 0) { throw "RGB-Hub could not be installed from GitHub (exit code $status)." }
 }
 
-function Invoke-Setup([string]$Version, [string]$User) {
+function Invoke-Setup([string]$Version, [string]$User, [string]$PythonZip) {
     Say '==> Setup with admin rights (Windows asks once)'
     $finish = Join-Path $Version 'install\windows\finish-setup.ps1'
-    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$finish`" -User `"$User`" -FirstInstall -From `"$Version`""
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$finish`" -User `"$User`" -FirstInstall -From `"$Version`" -PythonZip `"$PythonZip`""
     try {
         $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
     } catch {
@@ -207,20 +210,23 @@ try {
 
     $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     $version = $found.Version
+    # Python's download (checksum checked) is needed every time: setup with admin rights
+    # checks it again and unpacks its own copy into Program Files.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $pins = Read-Pins (Join-Path $PSScriptRoot 'pins.json')
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ('rgbhub-install-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $temp | Out-Null
+    $zip = Get-Checked $pins.python $temp "Windows' Python $($pins.python.version)"
     if ($steps -contains 'python') {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        $pins = Read-Pins (Join-Path $PSScriptRoot 'pins.json')
         New-Item -ItemType Directory -Force -Path $root | Out-Null
-        $temp = Join-Path ([IO.Path]::GetTempPath()) ('rgbhub-install-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $temp | Out-Null
-        Install-Python $pins $root $temp
+        Install-Python $pins $root $temp $zip
     }
     if ($steps -contains 'version') {
         Install-Version $repo $root
         $version = (Get-InstallState $root $false).Version
         if (-not $version) { throw "RGB-Hub was installed, but $root\current.txt names no version." }
     }
-    Invoke-Setup $version $user
+    Invoke-Setup $version $user $zip
     Say ''
     Say "Done: RGB-Hub $((Split-Path -Leaf $version).Substring(0, 7)) is installed. It starts at every sign-in"
     Say 'and keeps itself up to date. OMEN Gaming Hub was removed.'

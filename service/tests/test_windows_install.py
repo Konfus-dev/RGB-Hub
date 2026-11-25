@@ -1110,6 +1110,11 @@ def test_install_ps1_knows_what_is_installed_and_what_to_do(tmp_path):
     finish = root / "versions" / A / "install" / "windows" / "finish-setup.ps1"
     finish.parent.mkdir(parents=True)
     finish.write_text("#")
+    assert state(False) == ["new", ""]  # no Python, no pip.whl: everything again
+    (root / "python").mkdir()
+    (root / "python" / "python.exe").write_text("#")
+    assert state(False) == ["new", ""]  # still no pip.whl
+    (root / "pip.whl").write_text("#")
     # (pwsh on Linux joins with "\", which is fine on Windows; compare the name only)
     assert state(False)[0] == "unfinished" and state(False)[1].endswith(A)
     assert state(True)[0] == "installed"
@@ -1139,6 +1144,11 @@ def test_install_ps1_installs_with_the_updaters_own_code():
     # One admin prompt, for that version's finish-setup.ps1 in its first-install mode.
     assert text.count("-Verb RunAs") == 1
     assert "-FirstInstall -From" in text and "install\\windows\\finish-setup.ps1" in text
+    assert '-PythonZip `"$PythonZip`"' in text and "Invoke-Setup $version $user $zip" in text
+    # The zip is downloaded (and checked) on every path that reaches the setup.
+    main = text[text.index("$version = $found.Version") :]
+    first = main.index("$zip = Get-Checked $pins.python")
+    assert first < main.index("if ($steps -contains 'python')")
     # Never the settings; an existing settings.json stays as it is.
     assert "settings.json" not in text.replace("an existing %APPDATA%\\rgbhub\\settings.json", "")
     assert "'qemu|virtual'" in text
@@ -1152,11 +1162,92 @@ def test_finish_setup_first_install_puts_program_files_in_place_then_checks_with
     body = text[text.index("function Install-First") :]
     body = body[: body.index("\n}\n")]
     assert "Get-VersionFolder $Version" in body
-    assert "Assert-NoReparse $python -Tree" in body and "Assert-NoReparse $full -Tree" in body
+    assert "Assert-NoReparse $full -Tree" in body
     assert "verify_update.py" in body
+    # Python: never the owner's copy; the zip is copied in, then checked, then unpacked.
+    assert "AppRoot" not in body
+    assert body.index("Copy-Item -LiteralPath $Zip -Destination $copy") < body.index(
+        "Test-Checksum $copy $pins.python.sha256"
+    )
+    assert body.index("Test-Checksum $copy") < body.index("Expand-Archive -LiteralPath $copy")
+    assert '. "$PSScriptRoot\\install.ps1"' in body and "Enable-ImportSite" in body
     assert "Stop-ScheduledTask -TaskName 'RGB-Hub RAM'" in body
     # In the main part: Program Files first, then GitHub's admin parts, then the usual setup.
     main = text[text.index("if ($FirstInstall) {\n        if (-not $From)") :]
     assert main.index("Install-First $From") < main.index("Install-Approved $From")
     assert main.index("Install-Approved $From") < main.index("Reset-ProgramFolder\n")
     assert main.index("Reset-ProgramFolder\n") < main.index("Register-Tasks $Owner")
+
+
+def test_the_installer_is_not_an_admin_part(tmp_path):
+    """install.ps1 runs with the owner's rights: a change to it alone asks for no approval."""
+    lay = layout(tmp_path)
+    new = approved_version(tmp_path)
+    (new / "install/windows/install.ps1").write_text("# installer\n")
+    assert "install/windows/install.ps1" not in lay.privileged_changes(None, new)
+    assert "install/windows/install.ps1" not in verify.privileged_files(new)
+    assert "install/windows/finish-setup.ps1" in verify.privileged_files(new)
+    assert win_layout.NOT_PRIVILEGED == verify.NOT_PRIVILEGED == {"install.ps1"}
+
+
+def install_first_script(program: Path, approot: Path, zip_path: Path, sha256: str) -> str:
+    """finish-setup.ps1's Install-First with its helpers, run in pwsh with stand-ins."""
+    text = (INSTALL / "windows" / "finish-setup.ps1").read_text()
+
+    def function(name):
+        start = text.index(f"function {name}")
+        return text[start : text.index("\n}\n", start) + 3]
+
+    pins = json.loads(PINS.read_text())
+    pins["python"]["sha256"] = sha256
+    folder = zip_path.parent / "scripts"
+    folder.mkdir()
+    shutil.copy(INSTALL_PS1, folder / "install.ps1")
+    (folder / "pins.json").write_text(json.dumps(pins))
+    body = "".join(
+        function(n) for n in ("Test-Reparse", "Assert-NoReparse", "Install-First")
+    ).replace("$PSScriptRoot", "$ScriptsFolder")
+    return (
+        "$ErrorActionPreference = 'Stop'; $PSStyle.OutputRendering = 'PlainText'; "
+        "function Say($t) { Write-Host $t }; function Stop-ScheduledTask { }; "
+        # (its Windows paths are checked on Windows; here: the folder as given)
+        "function Get-VersionFolder($v) { $v }; "
+        f"$ScriptsFolder = '{folder}'; $Program = '{program}'; $AppRoot = '{approot}'; {body}; "
+        f"Install-First '{approot}/versions/{A}' '{zip_path}'"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("good", [True, False])
+def test_first_install_unpacks_python_from_the_checked_zip(tmp_path, good):
+    approot = tmp_path / "RGB-Hub"
+    version = approot / "versions" / A
+    (version / "install" / "windows").mkdir(parents=True)
+    (version / "install" / "windows" / "verify_update.py").write_text("# checker\n")
+    (approot / "python").mkdir()
+    (approot / "python" / "python.exe").write_text("the owner's copy")  # never used
+    zip_path = tmp_path / "dl" / "python.zip"
+    zip_path.parent.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("python.exe", "python.org's")
+        zf.writestr("python313._pth", "python313.zip\r\n.\r\n#import site\r\n")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest() if good else "0" * 64
+    program = tmp_path / "Program Files" / "RGB-Hub"
+    command = install_first_script(program, approot, zip_path, digest)
+    done = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if good:
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert (program / "python" / "python.exe").read_text() == "python.org's"
+        assert "\nimport site" in (program / "python" / "python313._pth").read_text()
+        assert (program / "install" / "windows" / "verify_update.py").is_file()
+        assert sorted(p.name for p in program.iterdir()) == ["install", "python"]
+    else:
+        assert done.returncode != 0
+        assert "checksum differs" in done.stdout + done.stderr
+        assert not (program / "python").exists()
+        assert not (program / "python-download.zip").exists()

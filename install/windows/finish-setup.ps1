@@ -6,14 +6,14 @@ RGB-Hub: finish the install. Runs with admin rights, once:
         after the install made from Ubuntu (install-windows.sh), at the owner's
         first sign-in afterwards (RGB-Hub-setup.cmd in the Startup folder asks
         for admin rights)
-    finish-setup.ps1 -User <name> -FirstInstall -From <version folder>
+    finish-setup.ps1 -User <name> -FirstInstall -From <version folder> -PythonZip <zip>
         after the install made from Windows (install.ps1, which asks for admin
         rights): first puts C:\Program Files\RGB-Hub in place, made in
-        Program Files (so with its permissions): a copy of the owner's Python
-        (install.ps1 checked python.org's download), this script's
-        verify_update.py, and then the RAM helper and setup scripts as for an
-        approved update (GitHub's copies, checked by verify_update.py); then
-        everything below
+        Program Files (so with its permissions): Python, unpacked from a copy
+        of the downloaded zip whose checksum is checked here against
+        pins.json; this script's verify_update.py; and then the RAM helper and
+        setup scripts as for an approved update (GitHub's copies, checked by
+        verify_update.py); then everything below
 
 - C:\Program Files\RGB-Hub gets the permissions Windows gives Program Files
   (install-windows.sh already made it admin-only); the owner's own folders get
@@ -49,7 +49,8 @@ param(
     [Parameter(Mandatory = $true)][string]$User,
     [switch]$HelperOnly,
     [switch]$FirstInstall,
-    [string]$From
+    [string]$From,
+    [string]$PythonZip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -263,29 +264,41 @@ function Get-VersionFolder([string]$Version) {
     return $full
 }
 
-function Install-First([string]$Version) {
+function Install-First([string]$Version, [string]$Zip) {
     # C:\Program Files\RGB-Hub made here, so it has Program Files' permissions
     # (administrators write, users read and run): Python and the update checker.
+    # Python comes from the downloaded zip, copied in here first and only then
+    # checked, so nothing can change it after the check.
     $full = Get-VersionFolder $Version
-    $python = Join-Path $AppRoot 'python'
-    Assert-NoReparse $AppRoot
-    Assert-NoReparse $python -Tree
     Assert-NoReparse $full -Tree
-    if (-not (Test-Path -LiteralPath "$python\python.exe")) { throw "There is no Python in $python." }
+    if (-not $Zip -or -not (Test-Path -LiteralPath $Zip -PathType Leaf)) { throw "There is no Python download at $Zip." }
+    Assert-NoReparse $Zip
+    # install.ps1's own Read-Pins, Test-Checksum and Enable-ImportSite (dot-sourced: only its functions).
+    . "$PSScriptRoot\install.ps1"
+    $pins = Read-Pins "$PSScriptRoot\pins.json"
     Assert-NoReparse $Program -Tree
     # A repair: the RAM helper runs from the Python being replaced.
     Stop-ScheduledTask -TaskName 'RGB-Hub RAM' -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path "$Program\install\windows" | Out-Null
-    foreach ($leftover in @("$Program\python.new", "$Program\python.old")) {
+    $copy = "$Program\python-download.zip"
+    foreach ($leftover in @("$Program\python.new", "$Program\python.old", $copy)) {
         if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force }
     }
-    Copy-Item -Recurse -LiteralPath $python -Destination "$Program\python.new"
+    Copy-Item -LiteralPath $Zip -Destination $copy
+    if (-not (Test-Checksum $copy $pins.python.sha256)) {
+        Remove-Item -LiteralPath $copy -Force
+        throw "The Python download is not the file python.org published (checksum differs); nothing was installed."
+    }
+    Expand-Archive -LiteralPath $copy -DestinationPath "$Program\python.new"
+    Remove-Item -LiteralPath $copy -Force
+    $pth = "$Program\python.new\$($pins.python.pth)"
+    Set-Content -LiteralPath $pth -Value (Enable-ImportSite (Get-Content -Raw -LiteralPath $pth)) -Encoding Ascii -NoNewline
     if (Test-Path -LiteralPath "$Program\python") { Rename-Item -LiteralPath "$Program\python" -NewName 'python.old' }
     Rename-Item -LiteralPath "$Program\python.new" -NewName 'python'
     if (Test-Path -LiteralPath "$Program\python.old") { Remove-Item -LiteralPath "$Program\python.old" -Recurse -Force }
     # The checker that runs next checks itself with GitHub too, with the rest.
     Copy-Item -Force -LiteralPath "$full\install\windows\verify_update.py" -Destination "$Program\install\windows\verify_update.py"
-    Say "Put Python and the update checker into $Program"
+    Say "Put Python $($pins.python.version) (checksum checked) and the update checker into $Program"
 }
 
 function Install-Approved([string]$Version) {
@@ -332,7 +345,7 @@ try {
 
     if ($FirstInstall) {
         if (-not $From) { throw '-FirstInstall needs -From <version folder>.' }
-        Install-First $From
+        Install-First $From $PythonZip
         Install-Approved $From
     }
 

@@ -201,8 +201,9 @@ the newest `main` from GitHub, with the Windows libraries, into
 administrator rights (UAC)**. After you accept, setup finishes by itself:
 
 - it puts Python, the small RAM helper and the setup scripts into
-  `C:\Program Files\RGB-Hub` (only administrators can change them there; the
-  helper and scripts are checked against GitHub first);
+  `C:\Program Files\RGB-Hub` (only administrators can change them there;
+  Python's download is checked again there, the helper and scripts are
+  checked against GitHub first);
 - it registers three scheduled tasks that start at every sign-in (the hub,
   the updater, and the RAM helper, which is the only part with full rights),
   and starts them;

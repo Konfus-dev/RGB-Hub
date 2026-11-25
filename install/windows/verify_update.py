@@ -42,6 +42,8 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # what goes into a GitHub address as a file name
 # (folder in a version, file suffix): what finish-setup.ps1 installs into Program Files.
 PRIVILEGED = (("helper", ".py"), ("install/windows", ".ps1"), ("install/windows", ".py"))
+# ...except the installer, which runs with the owner's rights.
+NOT_PRIVILEGED = frozenset({"install.ps1"})
 
 
 class Refused(Exception):
@@ -81,7 +83,7 @@ def privileged_files(version: Path) -> list[str]:
     found = []
     for folder, suffix in PRIVILEGED:
         for path in sorted((Path(version) / folder).glob(f"*{suffix}")):
-            if path.is_file() and not path.is_symlink():
+            if path.is_file() and not path.is_symlink() and path.name not in NOT_PRIVILEGED:
                 found.append(f"{folder}/{path.name}")
     return found
 
