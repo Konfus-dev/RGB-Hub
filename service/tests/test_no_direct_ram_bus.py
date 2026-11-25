@@ -29,7 +29,7 @@ SKIP_SUFFIXES = {".md", ".ko", ".compiled", ".png", ".jpg", ".jpeg", ".gif", ".p
 FORBIDDEN = [
     (r"\bimport\s+smbus2?\b|\bfrom\s+smbus2?\b", "SMBus library"),
     (r"\bsmbus2?\.", "SMBus library"),
-    (r"\b(?:import|from)\s+(?:periphery|pyftdi\.i2c|i2c|pyi2c|ctypes|fcntl)\b", "raw bus access"),
+    (r"\b(?:import|from)\s+(?:periphery|pyftdi\.i2c|i2c|pyi2c|fcntl)\b", "raw bus access"),
     (r"\bioctl\b", "raw ioctl (I2C_SLAVE / I2C_RDWR)"),
     (r"\bI2C_(?:SLAVE|RDWR|SMBUS)\b", "I2C ioctl"),
     (r"/dev/i2c", "the I2C device nodes"),
@@ -39,6 +39,26 @@ FORBIDDEN = [
     # Windows: the port-access drivers that SMBus tools (OpenRGB among them) use.
     (r"(?i)\bwinring0|\binpout", "raw port access on Windows"),
 ]
+
+# ctypes reaches any C function, so it is allowed only where Windows' own desktop
+# functions are called (the focused window, icons, wallpaper, session, tray), and
+# only into the DLLs in WINDOWS_DLLS below (none of which reaches a bus).
+CTYPES_FILES = {
+    f"service/rgbhub/platforms/windows/{name}.py"
+    for name in ("focus", "icons", "wallpaper", "session", "tray", "__init__")
+}
+WINDOWS_DLLS = {
+    "user32", "kernel32", "shell32", "gdi32", "ole32", "combase", "dwmapi", "advapi32",
+}  # fmt: skip
+IMPORTS_CTYPES = re.compile(r"\b(?:import|from)\s+ctypes\b|\b__import__\(\s*[\"']ctypes")
+# Any way of loading a DLL by name: ctypes.WinDLL("x"), windll.x, cdll.LoadLibrary("x"), ...
+LOADS_DLL = re.compile(
+    r"\b(?:WinDLL|CDLL|OleDLL|PyDLL|LoadLibrary\w*)\s*\(\s*(?P<call>[^,)]*)"
+    r"|\b(?:windll|oledll|cdll|pydll)\.(?P<attr>\w+)",
+    re.IGNORECASE,
+)
+# Kernel drivers that give programs raw port / SMBus access on Windows.
+PORT_DRIVERS = re.compile(r"(?i)winring0|inpout|pawnio")
 
 # Mentions of the I2C bus that are allowed, and why. Only these files may
 # mention I2C at all; anything else that does is flagged by the test below.
@@ -132,6 +152,55 @@ def test_the_ram_code_never_names_the_controllers_bus_addresses():
         if name in RAM_CODE
         for number, line in enumerate(text.splitlines(), 1)
         if CONTROLLER_ADDRESS.search(line)
+    ]
+    assert hits == [], "\n".join(hits)
+
+
+def test_ctypes_only_in_the_windows_desktop_files():
+    using = {name for name, text in FILES if IMPORTS_CTYPES.search(text)}
+    assert using <= CTYPES_FILES, sorted(using - CTYPES_FILES)
+    assert "service/rgbhub/platforms/windows/focus.py" in using  # the scan sees them
+
+
+def _dll_name(match: re.Match) -> str:
+    """The DLL a LOADS_DLL match loads: its file name without folder or ".dll"
+    (anything that is not a plain name, like a variable, stays as written)."""
+    if match["attr"] is not None:
+        return match["attr"].lower()
+    name = match["call"].strip().lstrip("rRbB").strip("\"'")
+    return re.split(r"[\\/]+", name)[-1].lower().removesuffix(".dll")
+
+
+def test_only_windows_own_dlls_are_loaded():
+    hits = [
+        f"{name}:{number}: {line.strip()}"
+        for name, text in FILES
+        if name.startswith(("service/", "helper/"))
+        for number, line in enumerate(text.splitlines(), 1)
+        for match in LOADS_DLL.finditer(line)
+        if _dll_name(match) not in WINDOWS_DLLS
+    ]
+    assert hits == [], "Only Windows' own DLLs may be loaded:\n" + "\n".join(hits)
+
+
+def test_the_dll_check_catches_other_dlls():
+    def names(line):
+        return [_dll_name(m) for m in LOADS_DLL.finditer(line)]
+
+    assert names('ctypes.WinDLL("user32", use_last_error=True)') == ["user32"]
+    assert names("ctypes.windll.kernel32.Beep(1, 1)") == ["kernel32"]
+    assert names('ctypes.WinDLL(r"C:\\Tools\\WinRing0x64.dll")') == ["winring0x64"]
+    assert names('ctypes.cdll.LoadLibrary("inpoutx64.dll")') == ["loadlibrary"]
+    assert names("ctypes.CDLL(path)") == ["path"]
+
+
+def test_no_port_access_drivers_are_named():
+    hits = [
+        f"{name}:{number}: {line.strip()}"
+        for name, text in FILES
+        if name.startswith(("service/", "helper/"))
+        for number, line in enumerate(text.splitlines(), 1)
+        if PORT_DRIVERS.search(line)
     ]
     assert hits == [], "\n".join(hits)
 
