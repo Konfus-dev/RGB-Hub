@@ -189,3 +189,17 @@ class FakeHidBus:
 
     def unplug(self, path: str) -> None:
         self.devices[path][1].plugged = False
+
+
+class FakeRamBus:
+    """An in-memory RamBus for tests: records every batch sent."""
+
+    def __init__(self, sticks: list[int]):
+        self._sticks = list(sticks)
+        self.batches: list[list[Command]] = []
+
+    def send(self, batch: list[Command]) -> None:
+        self.batches.append(batch)
+
+    def sticks(self) -> list[int]:
+        return list(self._sticks)

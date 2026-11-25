@@ -22,7 +22,7 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from ..backends import openrgb, ram_bios
+from ..backends import openrgb
 from ..core.hub import Hub
 from ..core.lcd_folder import load_lcd_folder
 from ..core.lights import Lights
@@ -36,6 +36,7 @@ from ..devices.omen_pc.ram import RamLights
 from . import glib_runtime, gnome_migrate, gnome_theme, gtk_icons, logind
 from .gsettings_store import GSettingsStore, load_settings
 from .linux.hidraw import HidrawBus
+from .linux.ram import HelperRamBus
 
 log = logging.getLogger(__name__)
 
@@ -128,8 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                 LcdStreamer(lcd_opener(bus)),
                 Lights(openrgb.connect, omen_model.HIDDEN_ZONES, omen_model.LED_GAMMA),
                 ram=RamLights(
-                    ram_bios.send_to_helper,
-                    ram_bios.find_sticks,
+                    HelperRamBus(),
                     gamma=omen_model.LED_GAMMA,
                     background=True,
                 ),

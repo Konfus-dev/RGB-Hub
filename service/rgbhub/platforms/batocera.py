@@ -31,7 +31,6 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..backends import ram_bios
 from ..core.hub import Hub
 from ..core.lcd_folder import load_lcd_folder
 from ..core.lights import Lights
@@ -46,6 +45,7 @@ from ..devices.omen_pc.ram import RamLights
 from . import batocera_games, batocera_theme, glib_runtime
 from .json_store import JsonSettings
 from .linux.hidraw import HidrawBus
+from .linux.ram import AcpiRamBus, find_sticks, find_sticks_dmi
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ def _mtime(path: Path) -> float:
 def _find_sticks() -> list[int]:
     """The fitted RAM sticks. Batocera's kernel does not list them, so the
     BIOS's tables are asked; the kernel's list is still tried first."""
-    return ram_bios.find_sticks() or ram_bios.find_sticks_dmi()
+    return find_sticks() or find_sticks_dmi()
 
 
 def _ram_lights() -> RamLights | None:
@@ -142,8 +142,7 @@ def _ram_lights() -> RamLights | None:
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
     return RamLights(
-        ram_bios.direct_sender(helper, _find_sticks),
-        _find_sticks,
+        AcpiRamBus(helper, _find_sticks),
         gamma=omen_model.LED_GAMMA,
         background=True,
     )

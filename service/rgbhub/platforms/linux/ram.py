@@ -10,9 +10,10 @@ ordinary user's service goes through the small root helper
 
 import socket
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
-from ..core.interfaces import Command
+from ...core.interfaces import Command
 
 HELPER_SOCKET = "/run/rgbhub-ram.sock"
 # The helper normally answers within a tenth of a second. Waiting longer
@@ -41,22 +42,31 @@ def find_sticks(i2c_devices: Path = I2C_DEVICES) -> list[int]:
     return sticks
 
 
-def send_to_helper(batch: list[Command], path: str = HELPER_SOCKET) -> None:
-    """Send commands to the root helper. Raises OSError if anything fails.
+class HelperRamBus:
+    """RAM writes through the root helper's socket (desktop Linux)."""
 
-    An empty batch just checks that the helper answers.
-    """
-    lines = [f"W {a:02x} {r:02x} {v:02x}" for a, r, v in batch] or ["PING"]
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(HELPER_TIMEOUT_S)
-        connection.connect(path)
-        with connection.makefile("rw", encoding="ascii") as stream:
-            for line in lines:
-                stream.write(line + "\n")
-                stream.flush()
-                reply = stream.readline().strip()
-                if reply != "OK":
-                    raise OSError(f"RAM helper refused '{line}': {reply or 'no answer'}")
+    def __init__(self, socket_path: str = HELPER_SOCKET):
+        self._path = socket_path
+
+    def sticks(self) -> list[int]:
+        return find_sticks()
+
+    def send(self, batch: list[Command]) -> None:
+        """Send commands to the root helper. Raises OSError if anything fails.
+
+        An empty batch just checks that the helper answers.
+        """
+        lines = [f"W {a:02x} {r:02x} {v:02x}" for a, r, v in batch] or ["PING"]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(HELPER_TIMEOUT_S)
+            connection.connect(self._path)
+            with connection.makefile("rw", encoding="ascii") as stream:
+                for line in lines:
+                    stream.write(line + "\n")
+                    stream.flush()
+                    reply = stream.readline().strip()
+                    if reply != "OK":
+                        raise OSError(f"RAM helper refused '{line}': {reply or 'no answer'}")
 
 
 def sticks_from_dmidecode(text: str) -> list[int]:
@@ -88,8 +98,8 @@ def find_sticks_dmi(command: tuple[str, ...] | list[str] = ("dmidecode", "-t", "
     return sticks_from_dmidecode(result.stdout)
 
 
-def direct_sender(helper, find):
-    """A RAM sender for a service that is itself root (Batocera).
+class AcpiRamBus:
+    """RAM writes for a service that is itself root (Batocera).
 
     `helper` is the root helper's module (helper/rgbhub_ram_helper.py),
     loaded by the platform. Its checks on registers and values are used
@@ -98,13 +108,18 @@ def direct_sender(helper, find):
     for the kernel's list the helper would otherwise consult.
     """
 
-    def send(batch: list[Command]) -> None:
-        fitted = set(find())
+    def __init__(self, helper, find: Callable[[], list[int]]):
+        self._helper = helper
+        self._find = find
+
+    def sticks(self) -> list[int]:
+        return self._find()
+
+    def send(self, batch: list[Command]) -> None:
+        fitted = set(self._find())
         for address, register, value in batch:
-            reply = helper.handle_line(
+            reply = self._helper.handle_line(
                 f"W {address:02x} {register:02x} {value:02x}", present=fitted.__contains__
             )
             if reply != "OK":
                 raise OSError(f"RAM write refused: {reply}")
-
-    return send

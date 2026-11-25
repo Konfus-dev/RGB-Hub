@@ -153,8 +153,8 @@ The code is meant to be easy to change and to extend to other systems.
 |---|---|
 | `service/rgbhub/core/` | The hub (`hub.py`) and what lights and the LCD should do. No operating-system or hardware-library imports. `device.py` is what a device must offer, `interfaces.py` what else the core needs handed in; `settings_schema.py` lists every setting. |
 | `service/rgbhub/devices/` | One folder per device (`omen_pc/`, `iqunix_keyboard/`) with its protocol code and model facts: zone and effect names, hidden zones, colour correction. |
-| `service/rgbhub/backends/` | One file per way of reaching hardware: `openrgb.py` (case lights) and `ram_bios.py` (RAM). |
-| `service/rgbhub/platforms/` | One file per system (`gnome.py`, `batocera.py`) that picks backends and wires in that system's settings storage, timers and "what is in focus". |
+| `service/rgbhub/backends/` | One file per way of reaching hardware: `openrgb.py` (case lights). |
+| `service/rgbhub/platforms/` | One file per system (plus `linux/`: `hidraw.py` for USB devices and `ram.py` for RAM writes) (`gnome.py`, `batocera.py`) that picks backends and wires in that system's settings storage, timers and "what is in focus". |
 | `frontends/` | What you see and touch: the GNOME Shell extension, the Batocera service switch and game hook. A front end only reads and writes settings. |
 | `helper/` | The small root helper for RAM lights on desktop Linux. |
 | `install/`, `systemd/` | Set-up scripts and service definitions. |

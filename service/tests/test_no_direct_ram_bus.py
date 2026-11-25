@@ -44,7 +44,7 @@ ALLOWED = {
     # Reads /sys/bus/i2c/devices/*/name to see which slots have a stick.
     # Plain sysfs files the kernel fills in; no bus traffic.
     "helper/rgbhub_ram_helper.py": "sysfs presence check",
-    "service/rgbhub/backends/ram_bios.py": "sysfs presence check",
+    "service/rgbhub/platforms/linux/ram.py": "sysfs presence check",
     # Loads the i2c-dev module at boot because OpenRGB expects it. Loading
     # the module sends nothing; OpenRGB's RAM detectors are switched off.
     "install/setup.sh": "loads the i2c-dev module for OpenRGB",
@@ -80,7 +80,7 @@ def test_the_scan_sees_the_code():
     # If these go missing the scan has stopped looking where the code is.
     for expected in (
         "helper/rgbhub_ram_helper.py",
-        "service/rgbhub/backends/ram_bios.py",
+        "service/rgbhub/platforms/linux/ram.py",
         "service/rgbhub/devices/omen_pc/ram.py",
         "install/install-user.sh",
         "install/setup.sh",
@@ -114,7 +114,7 @@ def test_only_the_listed_files_mention_i2c():
 
 
 def test_i2c_mentions_in_code_are_sysfs_reads_only():
-    for name in ("helper/rgbhub_ram_helper.py", "service/rgbhub/backends/ram_bios.py"):
+    for name in ("helper/rgbhub_ram_helper.py", "service/rgbhub/platforms/linux/ram.py"):
         text = dict(FILES)[name]
         for line in text.splitlines():
             if I2C_MENTION.search(line) and "/" in line and '"' in line:
@@ -141,7 +141,7 @@ def test_setup_only_loads_the_module():
 # Every place in the Python code that starts another program, and why it is safe.
 ALLOWED_PROGRAMS = {
     "service/rgbhub/platforms/gnome_migrate.py": "dconf dump: reads old settings",
-    "service/rgbhub/backends/ram_bios.py": "dmidecode -t 17: the BIOS's memory table, no bus",
+    "service/rgbhub/platforms/linux/ram.py": "dmidecode -t 17: the BIOS's memory table, no bus",
     "install/enable-gnome-extension.py": "gsettings get/set org.gnome.shell (installer)",
 }
 STARTS_PROGRAM = re.compile(r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*)\b")

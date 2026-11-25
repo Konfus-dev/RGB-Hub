@@ -38,7 +38,7 @@ using it, see the [README](../README.md).
                                            +--> Hub --> OmenPc ---------> LcdStreamer -> hidraw.py   -> cooler LCD
  Batocera service switch +                 |     |        |------------> Lights ------> openrgb.py  -> case lights
  and game hook ----------+-> batocera.py --+     |        |                        \---> tracer.py   -> case lights
-                                                 |        \------------> RamLights ---> ram_bios.py -> BIOS -> RAM
+                                                 |        \------------> RamLights ---> platforms/linux/ram.py -> BIOS -> RAM
                                                  \----> IqunixKeyboard -> Lights ------> via.py      -> keyboard
 ```
 

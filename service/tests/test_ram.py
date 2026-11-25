@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from rgbhub.backends.ram_bios import find_sticks
+from rgbhub.core.interfaces import FakeRamBus
 from rgbhub.core.lights import DeviceInfo, EffectOptions
 from rgbhub.devices.omen_pc.ram import RamLights, commands
+from rgbhub.platforms.linux.ram import find_sticks
 
 BEGIN, END = 0x53, 0x44
 LEFT, RIGHT = 0xC2, 0xC6  # slots 1 and 3, as on the test machine
@@ -88,23 +89,37 @@ def test_no_sticks_no_commands():
     assert commands("Static", 100, [], []) == []
 
 
-class Sender:
-    def __init__(self):
-        self.batches, self.fail = [], False
+class Sender(FakeRamBus):
+    """A RamBus that can be told to fail, as when the helper is not running."""
 
-    def __call__(self, batch):
+    def __init__(self, sticks=(LEFT,)):
+        super().__init__(list(sticks))
+        self.fail = False
+
+    def send(self, batch):
         if self.fail:
             raise OSError("helper not running")
-        self.batches.append(batch)
+        super().send(batch)
+
+
+class FnBus(FakeRamBus):
+    """A RamBus over one function, for tests that need a slow or failing send."""
+
+    def __init__(self, send, sticks=(LEFT,)):
+        super().__init__(list(sticks))
+        self._fn = send
+
+    def send(self, batch):
+        self._fn(batch)
 
 
 NOW = [1000.0]  # a clock the tests can move forward
 
 
 def connected(tmp_path, *spd):
-    sender = Sender()
     sysfs = make_sysfs(tmp_path, *spd)
-    ram = RamLights(sender, lambda: find_sticks(sysfs), clock=lambda: NOW[0])
+    sender = Sender(find_sticks(sysfs))
+    ram = RamLights(sender, clock=lambda: NOW[0])
     assert ram.try_connect() is True
     sender.batches.clear()  # drop the connection test
     return ram, sender
@@ -153,13 +168,13 @@ def test_identical_apply_is_not_sent_twice(tmp_path):
 def test_helper_missing_is_quiet(tmp_path):
     sender = Sender()
     sender.fail = True
-    ram = RamLights(sender, lambda: [LEFT])
+    ram = RamLights(sender)
     assert ram.try_connect() is False and ram.connected is False and ram.devices() == []
     ram.apply(True, 100, {}, {})  # must not raise
 
 
 def test_no_sticks_means_not_connected():
-    assert RamLights(Sender(), lambda: []).try_connect() is False
+    assert RamLights(Sender([])).try_connect() is False
 
 
 def test_send_failure_disconnects_then_recovers_and_resends(tmp_path):
@@ -176,8 +191,7 @@ def test_send_failure_disconnects_then_recovers_and_resends(tmp_path):
 
 def test_ram_applies_gamma_to_stick_colours(tmp_path):
     sender = Sender()
-    sysfs = make_sysfs(tmp_path, 0x51)
-    ram = RamLights(sender, lambda: find_sticks(sysfs), gamma=2.2)
+    ram = RamLights(sender, gamma=2.2)
     ram.try_connect()
     sender.batches.clear()
     ram.apply(True, 100, {"RAM": "Static"}, {"RAM/Stick 1": "#613583"})
@@ -237,9 +251,8 @@ def test_failed_helper_is_left_alone_for_a_while(tmp_path):
     # A stuck helper must not be retried every few seconds: each try can
     # block the service, which also has to keep the LCD fed.
     now = [1000.0]
-    sender = Sender()
-    sysfs = make_sysfs(tmp_path, 0x51)
-    ram = RamLights(sender, lambda: find_sticks(sysfs), clock=lambda: now[0])
+    sender = Sender(find_sticks(make_sysfs(tmp_path, 0x51)))
+    ram = RamLights(sender, clock=lambda: now[0])
     sender.fail = True
     assert ram.try_connect() is False
     sender.fail = False
@@ -251,9 +264,8 @@ def test_failed_helper_is_left_alone_for_a_while(tmp_path):
 
 def test_send_failure_also_backs_off(tmp_path):
     now = [1000.0]
-    sender = Sender()
-    sysfs = make_sysfs(tmp_path, 0x51)
-    ram = RamLights(sender, lambda: find_sticks(sysfs), clock=lambda: now[0])
+    sender = Sender(find_sticks(make_sysfs(tmp_path, 0x51)))
+    ram = RamLights(sender, clock=lambda: now[0])
     ram.try_connect()
     sender.fail = True
     ram.apply(True, 100, {}, {})
@@ -279,8 +291,8 @@ def test_forget_makes_the_next_apply_send_again(tmp_path):
 def test_a_colour_change_sends_only_the_colour():
     # Each write goes through the BIOS and takes about 65 ms, so repeating
     # the whole set-up for every colour change would take over a second.
-    sender = Sender()
-    ram = RamLights(sender, lambda: [LEFT, RIGHT])
+    sender = Sender([LEFT, RIGHT])
+    ram = RamLights(sender)
     ram.try_connect()
     sender.batches.clear()
     ram.apply(True, 100, {"RAM": "Static"}, {"RAM/Stick 1": "#FF0000", "RAM/Stick 2": "#FF0000"})
@@ -294,7 +306,7 @@ def test_a_colour_change_sends_only_the_colour():
 
 def test_off_then_on_restores_brightness_only():
     sender = Sender()
-    ram = RamLights(sender, lambda: [LEFT])
+    ram = RamLights(sender)
     ram.try_connect()
     ram.apply(True, 80, {"RAM": "Static"}, {})
     ram.apply(False, 80, {"RAM": "Static"}, {})
@@ -314,7 +326,7 @@ def test_background_sending_does_not_hold_up_the_caller_and_latest_wins():
             release.wait(5)
             sent.append(batch)
 
-    ram = RamLights(slow_send, lambda: [LEFT], background=True)
+    ram = RamLights(FnBus(slow_send), background=True)
     ram.try_connect()
     ram.apply(True, 100, {"RAM": "Static"}, {"RAM/Stick 1": "#FF0000"})  # returns at once
     assert started.wait(5)  # the slow send is now under way
@@ -340,7 +352,7 @@ def test_a_request_still_queued_at_a_disconnect_keeps_its_begin_and_end():
             release.wait(5)
             sent.append(batch)
 
-    ram = RamLights(slow_send, lambda: [LEFT], background=True, clock=lambda: NOW[0])
+    ram = RamLights(FnBus(slow_send), background=True, clock=lambda: NOW[0])
     ram.try_connect()
     ram.apply(True, 100, {"RAM": "Static"}, {"RAM/Stick 1": "#FF0000"})
     assert started.wait(5)
@@ -359,7 +371,7 @@ def test_background_failure_is_noticed_by_check():
         if batch:
             raise OSError("helper died")
 
-    ram = RamLights(failing_send, lambda: [LEFT], background=True, clock=lambda: NOW[0])
+    ram = RamLights(FnBus(failing_send), background=True, clock=lambda: NOW[0])
     ram.try_connect()
     ram.apply(True, 100, {}, {})
     assert ram.wait_idle(5) is True
@@ -392,7 +404,7 @@ Memory Device
 
 
 def test_sticks_from_dmidecode_output():
-    from rgbhub.backends.ram_bios import sticks_from_dmidecode
+    from rgbhub.platforms.linux.ram import sticks_from_dmidecode
 
     assert sticks_from_dmidecode(DMIDECODE) == [LEFT, RIGHT]  # slots 1 and 3
     assert sticks_from_dmidecode("") == []
@@ -400,16 +412,16 @@ def test_sticks_from_dmidecode_output():
 
 
 def test_find_sticks_dmi_survives_a_missing_tool():
-    from rgbhub.backends.ram_bios import find_sticks_dmi
+    from rgbhub.platforms.linux.ram import find_sticks_dmi
 
     assert find_sticks_dmi(command=["/no/such/dmidecode"]) == []
 
 
-def test_direct_sender_trusts_the_platforms_list_of_sticks(tmp_path):
+def test_acpi_bus_trusts_the_platforms_list_of_sticks(tmp_path):
     import importlib.util
     from pathlib import Path
 
-    from rgbhub.backends.ram_bios import direct_sender
+    from rgbhub.platforms.linux.ram import AcpiRamBus
 
     path = Path(__file__).resolve().parents[2] / "helper" / "rgbhub_ram_helper.py"
     spec = importlib.util.spec_from_file_location("helper", path)
@@ -418,7 +430,7 @@ def test_direct_sender_trusts_the_platforms_list_of_sticks(tmp_path):
     sent = []
     helper.call_bios = lambda command: sent.append(command) or helper.REPLY_OK + "}"
     helper.time.sleep = lambda seconds: None
-    send = direct_sender(helper, lambda: [LEFT])
+    send = AcpiRamBus(helper, lambda: [LEFT]).send
     send([(LEFT, 0x20, 50)])
     assert len(sent) == 1
     import pytest

@@ -2,7 +2,7 @@
 """RAM stick lighting (Kingston Fury DDR5, as fitted by HP).
 
 This file decides which lighting registers to write. Delivering the writes
-is a backend's job (backends/ram_bios.py): the sticks are never spoken to
+is a RamBus's job (platforms/linux/ram.py): the sticks are never spoken to
 directly, because on the OMEN 45L that jams the RAM's control bus until the
 next reboot.
 
@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 
-from ...core.interfaces import Command
+from ...core.interfaces import Command, RamBus
 from ...core.lights import DEFAULT_COLOUR, DeviceInfo, EffectOptions, scale_colour, zone_key
 
 log = logging.getLogger(__name__)
@@ -151,14 +151,12 @@ class RamLights:
 
     def __init__(
         self,
-        send: Callable[[list[Command]], None],
-        find: Callable[[], list[int]],
+        bus: RamBus,
         gamma: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
         background: bool = False,
     ):
-        self._send = send
-        self._find = find
+        self._bus = bus
         self._gamma = gamma  # see lights.scale_colour
         self._clock = clock
         self._retry_at = 0.0  # do not contact the helper before this time
@@ -189,11 +187,11 @@ class RamLights:
             return True
         if self._clock() < self._retry_at:
             return False
-        sticks = self._find()
+        sticks = self._bus.sticks()
         if not sticks:
             return False
         try:
-            self._send([])
+            self._bus.send([])
         except OSError as error:
             log.debug("RAM helper not available: %s", error)
             self._back_off()
@@ -325,7 +323,7 @@ class RamLights:
         begin = [(stick, REG_TRANSFER, TRANSFER_BEGIN) for stick in sticks]
         end = [(stick, REG_TRANSFER, TRANSFER_END) for stick in sticks]
         try:
-            self._send(begin + changes + end)
+            self._bus.send(begin + changes + end)
         except OSError as error:
             log.warning("Could not set RAM lights: %s", error)
             return False
