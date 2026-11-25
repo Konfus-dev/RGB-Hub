@@ -11,14 +11,20 @@ the secret token (it is in the address start() returns):
 - the server listens on 127.0.0.1 only;
 - a request naming another host is refused (a web site cannot point a name
   of its own at 127.0.0.1 and read the page);
-- GET / needs ?t=<token>; the page's own files need the cookie it sets;
-  /api/* needs the token in the X-RGBHub-Token header, which other web
-  sites cannot send.
+- GET / needs ?t=<token>; the page's own files need the cookie it sets
+  (a separate secret that opens nothing else); /api/* needs the token in
+  the X-RGBHub-Token header, which other web sites cannot send;
+- these checks come before a request's body is read;
+- no other program may listen on the same port (no address reuse; on
+  Windows, exclusive use).
 
 The interface:
     GET  /api/state      {"settings": {...}, "status": {...}}
     POST /api/set        {"key": ..., "value": ...}: one setting, checked first
-    POST /api/picture    the bytes of an image (X-Filename: its name):
+    POST /api/set-entries {"key": ..., "entries": {...}}: some entries of a table
+                         setting, merged into it when the change is made (so a
+                         page that is a moment behind does not undo other changes)
+    POST /api/picture    the bytes of a PNG, JPEG, GIF, BMP or WebP picture:
                          kept in the pictures folder; replies {"path": ...}
     GET  /api/image      ?path=...: one of the chosen pictures, for the page to show
     POST /api/quit, /api/restart
@@ -35,8 +41,8 @@ import json
 import logging
 import mimetypes
 import os
-import re
 import secrets
+import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -56,7 +62,8 @@ MAX_BODY_BYTES = 256 * 1024  # anything but a picture
 TOKEN_HEADER = "X-RGBHub-Token"
 COOKIE = "rgbhub"
 NOT_WRITABLE = ("status", "focused-app")  # written by the hub and the platform only
-SAFE_EXTENSION = re.compile(r"^\.[a-z0-9]{1,5}$")
+# Pillow's name for a kind of picture -> the extension it is saved with
+PICTURE_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "GIF": ".gif", "BMP": ".bmp", "WEBP": ".webp"}
 
 
 @dataclass
@@ -96,6 +103,19 @@ def _route(method: str, path: str):
     return mark
 
 
+class _LocalServer(ThreadingHTTPServer):
+    """Our port is ours alone: no other program may listen on it as well."""
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)  # Windows only
+        if exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
+
+
 class SettingsServer:
     def __init__(
         self,
@@ -111,10 +131,11 @@ class SettingsServer:
         self._settings = settings
         self._runtime = runtime
         self._page_dir = Path(page_dir).resolve()
-        self._pictures_dir = Path(pictures_dir)
+        self._pictures_dir = Path(pictures_dir).resolve()
         self._on_quit = on_quit
         self._on_restart = on_restart
         self.token = secrets.token_urlsafe(24)
+        self._cookie_secret = secrets.token_urlsafe(24)  # opens the page's files only
         self.port = 0
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -129,8 +150,7 @@ class SettingsServer:
         class Handler(_Handler):
             server_owner = owner
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-        self._server.daemon_threads = True
+        self._server = _LocalServer(("127.0.0.1", port), Handler)
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(
             target=self._server.serve_forever,
@@ -152,8 +172,12 @@ class SettingsServer:
 
     # --- checks ----------------------------------------------------------------
 
+    @staticmethod
+    def _matches(given: str | None, secret: str) -> bool:
+        return bool(given) and hmac.compare_digest(given.encode(), secret.encode())
+
     def _same(self, given: str | None) -> bool:
-        return bool(given) and hmac.compare_digest(given.encode(), self.token.encode())
+        return self._matches(given, self.token)
 
     def _host_ok(self, request: Request) -> bool:
         return request.headers.get("Host") == f"127.0.0.1:{self.port}"
@@ -164,15 +188,27 @@ class SettingsServer:
             cookies.load(request.headers.get("Cookie", ""))
         except http.cookies.CookieError:
             return False
-        return COOKIE in cookies and self._same(cookies[COOKIE].value)
+        return COOKIE in cookies and self._matches(cookies[COOKIE].value, self._cookie_secret)
 
-    def answer(self, request: Request) -> Reply:
-        """The reply to one request (called on the server's threads)."""
+    def refuse(self, request: Request) -> Reply | None:
+        """The refusal for a request from a stranger, or None. Needs only the
+        request line and headers, so it is asked before the body is read."""
         if not self._host_ok(request):
             return _error(403, "wrong host")
         if request.path.startswith("/api/"):
-            if not self._same(request.headers.get(TOKEN_HEADER)):
-                return _error(403, "missing or wrong token")
+            allowed = self._same(request.headers.get(TOKEN_HEADER))
+        elif request.path == "/":
+            allowed = self._same((request.query.get("t") or [""])[0])
+        else:
+            allowed = self._cookie_ok(request)
+        return None if allowed else _error(403, "missing or wrong token")
+
+    def answer(self, request: Request) -> Reply:
+        """The reply to one request (called on the server's threads)."""
+        refusal = self.refuse(request)
+        if refusal is not None:
+            return refusal
+        if request.path.startswith("/api/"):
             handler = _ROUTES.get((request.method, request.path))
             if handler is None:
                 known = any(path == request.path for _, path in _ROUTES)
@@ -181,15 +217,11 @@ class SettingsServer:
         if request.method != "GET":
             return _error(405, "the page only reads")
         if request.path == "/":
-            if not self._same((request.query.get("t") or [""])[0]):
-                return _error(403, "missing or wrong token")
             reply = self._static("index.html")
             reply.headers["Set-Cookie"] = (
-                f"{COOKIE}={self.token}; Path=/; HttpOnly; SameSite=Strict"
+                f"{COOKIE}={self._cookie_secret}; Path=/; HttpOnly; SameSite=Strict"
             )
             return reply
-        if not (self._cookie_ok(request) or self._same((request.query.get("t") or [""])[0])):
-            return _error(403, "missing or wrong token")
         return self._static(request.path)
 
     def _static(self, path: str) -> Reply:
@@ -218,20 +250,44 @@ class SettingsServer:
             status = {}
         return _json({"settings": settings, "status": status})
 
-    @_route("POST", "/api/set")
-    def _set(self, request: Request) -> Reply:
+    @staticmethod
+    def _change(request: Request, field: str) -> tuple[str, Any] | Reply:
+        """The setting and value a change names, checked; or the refusal."""
         try:
             data = json.loads(request.body)
         except ValueError:
             return _error(400, "not JSON")
-        if not isinstance(data, dict) or "key" not in data or "value" not in data:
-            return _error(400, 'expected {"key": ..., "value": ...}')
-        key, value = data["key"], data["value"]
+        if not isinstance(data, dict) or "key" not in data or field not in data:
+            return _error(400, f'expected {{"key": ..., "{field}": ...}}')
+        key, value = data["key"], data[field]
         if not isinstance(key, str) or key not in DEFAULTS or key in NOT_WRITABLE:
             return _error(400, f"cannot set {key!r}")
         if not valid(key, value):
             return _error(400, f"wrong kind of value for {key}")
+        return key, value
+
+    @_route("POST", "/api/set")
+    def _set(self, request: Request) -> Reply:
+        change = self._change(request, "value")
+        if isinstance(change, Reply):
+            return change
+        key, value = change
         self._runtime.call_soon(lambda: self._settings.set(key, value))
+        return Reply(204)
+
+    @_route("POST", "/api/set-entries")
+    def _set_entries(self, request: Request) -> Reply:
+        change = self._change(request, "entries")
+        if isinstance(change, Reply):
+            return change
+        key, entries = change
+        if not isinstance(entries, dict):
+            return _error(400, f"{key} is not a table")
+
+        def merge() -> None:  # on the loop, into the table as it is then
+            self._settings.set(key, {**self._settings.get(key), **entries})
+
+        self._runtime.call_soon(merge)
         return Reply(204)
 
     @_route("POST", "/api/picture")
@@ -239,13 +295,13 @@ class SettingsServer:
         data = request.body
         try:
             with Image.open(io.BytesIO(data)) as image:
-                kind = (image.format or "").lower()
+                kind = image.format or ""
                 image.verify()
         except Exception:
             return _error(400, "this file is not a picture")
-        extension = Path(unquote(request.headers.get("X-Filename", ""))).suffix.lower()
-        if not SAFE_EXTENSION.match(extension):
-            extension = "." + (kind or "img")
+        extension = PICTURE_EXTENSIONS.get(kind)
+        if extension is None:
+            return _error(400, "use a PNG, JPEG, GIF, BMP or WebP picture")
         target = self._pictures_dir / (hashlib.sha1(data).hexdigest()[:12] + extension)
         try:
             self._pictures_dir.mkdir(parents=True, exist_ok=True)
@@ -303,6 +359,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve(self) -> None:
         url = urlsplit(self.path)
         request = Request(self.command, url.path, parse_qs(url.query), self.headers)
+        refusal = self.server_owner.refuse(request)
+        if refusal is not None:
+            self.close_connection = True  # the body is never read
+            self._send(refusal)
+            return
         limit = MAX_PICTURE_BYTES if url.path == "/api/picture" else MAX_BODY_BYTES
         try:
             length = int(self.headers.get("Content-Length") or 0)

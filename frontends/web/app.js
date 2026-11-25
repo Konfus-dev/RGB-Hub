@@ -60,23 +60,36 @@ async function poll() {
     }
 }
 
-/** Change one setting: at once on the page, then in the hub. */
-function setSetting(key, value) {
-    if (JSON.stringify(state.settings[key]) === JSON.stringify(value))
-        return;
-    state.settings[key] = value;
+/** Send one change to the hub, and show it on the page at once. */
+function send(path, body) {
     writes += 1;
-    api('/api/set', {
+    api(path, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({key, value}),
+        body: JSON.stringify(body),
     }).catch(() => (document.getElementById('offline').hidden = false));
     update();
 }
 
-/** Write several entries of a table setting (zone-colours, device-modes, ...). */
+/** Change one setting. */
+function setSetting(key, value) {
+    if (JSON.stringify(state.settings[key]) === JSON.stringify(value))
+        return;
+    state.settings[key] = value;
+    send('/api/set', {key, value});
+}
+
+/**
+ * Change some entries of a table setting (zone-colours, device-modes, ...).
+ * Only these entries are sent; the hub merges them into the table as it is
+ * then, so the page being a moment behind never undoes another change.
+ */
 function setEntries(key, entries) {
-    setSetting(key, {...(state.settings[key] ?? {}), ...entries});
+    const table = state.settings[key] ?? {};
+    if (Object.entries(entries).every(([name, value]) => table[name] === value))
+        return; // nothing new: avoid a pointless write
+    state.settings[key] = {...table, ...entries};
+    send('/api/set-entries', {key, entries});
 }
 
 function getEntry(key, name, fallback) {
@@ -193,7 +206,6 @@ function showPicture(img, path) {
 async function uploadPicture(file) {
     const response = await api('/api/picture', {
         method: 'POST',
-        headers: {'X-Filename': encodeURIComponent(file.name)},
         body: file,
     });
     if (!response.ok)
@@ -322,7 +334,8 @@ function lcdGroup() {
     section.add(previewRow);
 
     // Image chooser.
-    const fileInput = element('input', {type: 'file', accept: 'image/*'});
+    const fileInput = element('input', {type: 'file',
+        accept: 'image/png,image/jpeg,image/gif,image/bmp,image/webp'});
     fileInput.hidden = true;
     const chooseButton = element('button', {className: 'action', type: 'button',
         textContent: 'Choose image…'});
@@ -531,7 +544,7 @@ function autoPage(devices) {
     // The master switch is on while every device follows; flipping it sets them all.
     const everyOn = () => devices.every(device => getEntry('auto-devices', device.id, false));
     const master = switchControl('Auto mode');
-    master.addEventListener('change', () => setSetting('auto-devices',
+    master.addEventListener('change', () => setEntries('auto-devices',
         Object.fromEntries(devices.map(device => [device.id, master.checked]))));
     follow(master, () => (master.checked = everyOn()));
     section.add(row('Auto mode', 'Every device', master));
