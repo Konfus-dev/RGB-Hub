@@ -2,7 +2,7 @@
 """RAM stick lighting (Kingston Fury DDR5, as fitted by HP).
 
 This file decides which lighting registers to write. Delivering the writes
-is a backend's job (backends/ram_bios.py): the sticks are never spoken to
+is a backend's job (platforms/linux (RAM through the BIOS)): the sticks are never spoken to
 directly, because on the OMEN 45L that jams the RAM's control bus until the
 next reboot.
 
@@ -15,8 +15,8 @@ import threading
 import time
 from collections.abc import Callable
 
-from .interfaces import Command
-from .lights import DEFAULT_COLOUR, DeviceInfo, EffectOptions, scale_colour, zone_key
+from ...core.interfaces import Command
+from ...core.lights import DEFAULT_COLOUR, DeviceInfo, EffectOptions, scale_colour, zone_key
 
 log = logging.getLogger(__name__)
 

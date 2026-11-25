@@ -11,13 +11,13 @@ import logging
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from ..core import constants as c
-from ..core.image_prep import prepare_jpeg
-from ..core.interfaces import WatchFile
-from ..core.lcd_streamer import LcdStreamer
-from ..core.light_group import LightGroup
-from ..core.lights import Lights
-from ..core.ram import RamLights
+from ...core.interfaces import WatchFile
+from ...core.light_group import LightGroup
+from ...core.lights import Lights
+from . import lcd_constants as c
+from .image_prep import prepare_jpeg
+from .lcd_streamer import LcdStreamer
+from .ram import RamLights
 
 log = logging.getLogger(__name__)
 

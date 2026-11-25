@@ -1,22 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from rgbhub.backends import via
+import pytest
+
+from rgbhub.core.interfaces import FakeHidBus, FakeHidPort, HidMatch
 from rgbhub.core.lights import Lights
-from rgbhub.iqunix_mg65 import MG65
+from rgbhub.devices.iqunix_keyboard import via
+from rgbhub.devices.iqunix_keyboard.mg65 import MG65
 
 
-class FakePort:
-    def __init__(self):
-        self.sent = []
+class FakePort(FakeHidPort):
+    @property
+    def sent(self):
+        return self.written
 
     def write(self, report):
         assert len(report) == 1 + via.REPORT_LEN
-        self.sent.append(report)
-
-    def drain(self):
-        pass
-
-    def close(self):
-        self.closed = True
+        super().write(report)
 
 
 def commands(port):
@@ -88,18 +86,41 @@ def test_forgetting_sends_everything_again_and_store_saves():
     assert commands(port)[-1] == (9, 3)
 
 
-def test_the_keyboard_is_found_by_its_via_interface(tmp_path):
-    sys_root, dev_root = tmp_path / "sys", tmp_path / "dev"
-    for name, descriptor in (("hidraw3", "05010906"), ("hidraw4", "0660ff0961a101")):
-        node = sys_root / name / "device"
-        node.mkdir(parents=True)
-        (node / "uevent").write_text(f"HID_ID={MG65.hid_id}\n")
-        (node / "report_descriptor").write_bytes(bytes.fromhex(descriptor))
-    dev_root.mkdir()
-    (dev_root / "hidraw4").write_bytes(b"")
-    client = via.opener(MG65, sys_root, dev_root)()
-    assert client._node == dev_root / "hidraw4"
+def test_the_keyboard_is_found_by_its_via_interface():
+    other = FakePort()
+    wanted = FakePort()
+    bus = FakeHidBus(
+        {
+            "kbd-main": (HidMatch(0x320F, 0x5055, usage_page=0x0001, usage=0x06), other),
+            "kbd-via": (MG65.match, wanted),
+        }
+    )
+    client = via.opener(MG65, bus)()
+    client.keyboard.save()
+    assert wanted.written and not other.written
     client.disconnect()
+
+
+def test_opener_raises_when_the_keyboard_is_absent():
+    with pytest.raises(OSError):
+        via.opener(MG65, FakeHidBus({}))()
+
+
+def test_via_drains_replies_through_read():
+    port = FakePort()
+    client = via.ViaClient(port, MG65)
+    port.replies = [b"\x07" * 32, b"\x07" * 32]
+    client.keyboard.set_mode(client.keyboard.modes[0])
+    assert port.replies == []  # both answers to the first set were consumed
+
+
+def test_update_raises_when_the_keyboard_is_unplugged():
+    port = FakePort()
+    client = via.ViaClient(port, MG65)
+    client.update()
+    port.plugged = False
+    with pytest.raises(OSError):
+        client.update()
 
 
 def test_a_pale_colour_is_made_more_vivid_but_keeps_its_hue():

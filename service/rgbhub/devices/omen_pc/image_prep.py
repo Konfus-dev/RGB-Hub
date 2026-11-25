@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .constants import LCD_SIZE, MAX_JPEG_BYTES
+from .lcd_constants import LCD_SIZE, MAX_JPEG_BYTES
 
 # JPEG qualities to try, best first, until the result is small enough to send.
 QUALITY_STEPS = (90, 80, 70, 60, 50, 40, 30)

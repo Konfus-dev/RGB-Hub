@@ -99,7 +99,7 @@ The screen stores nothing; without a stream of frames it returns to the
 OMEN logo. The service re-sends the current image every 500 ms, the rate
 HP's software uses for a still picture. When the picture changes, a short
 burst of blended frames crossfades from the old one to the new
-(`core/lcd_fade.py`). Confirmed on firmware V3.05.024.
+(`devices/omen_pc/lcd_fade.py`). Confirmed on firmware V3.05.024.
 
 Protocol facts are from the notes in
 [omen-led-lcd](https://github.com/Xedecimal/omen-led-lcd); none of its code
@@ -110,7 +110,7 @@ is used.
 USB `103c:84fd` "HP TracerLED". OpenRGB drives it with its "HP Omen 30L"
 driver. It reports seven zones; on the 45L only the front logo and the
 three front fans have lights, so the other three are hidden
-(`omen45l.HIDDEN_ZONES`).
+(`devices/omen_pc/model.py` (`HIDDEN_ZONES`)).
 
 OpenRGB runs with its own configuration folder in which every detector
 except that one is switched off (`backends/openrgb.py`). Its normal RAM
@@ -157,7 +157,7 @@ password prompt per change (unusable). The helper:
 Register meanings come from HP's module and from OpenRGB's
 `KingstonFuryDRAMController`.
 
-Each write takes about 65 ms through the BIOS, so `core/ram.py` remembers what
+Each write takes about 65 ms through the BIOS, so `devices/omen_pc/ram.py` remembers what
 every register holds and sends only the ones that changed, on a worker
 thread, newest request wins. A colour change is then about ten writes
 instead of forty, and never delays the LCD or the case lights. The RAM
@@ -255,7 +255,7 @@ that changed are sent, and the hub draws nothing frame by frame on the
 keyboard (no fades, no hub-drawn breathing): the keyboard's own effects do
 the moving. The effects' names and numbers, and the brightness (0..9) and
 speed (0..4) ranges, are from IQUNIX's VIA definition of the MG65
-(`iqunix_mg65.py`).
+(`devices/iqunix_keyboard/mg65.py`).
 
 On GNOME a udev rule (`install/70-rgb-hub.rules`) gives the logged-in user
 the lighting interface only, not the ones that carry keystrokes.

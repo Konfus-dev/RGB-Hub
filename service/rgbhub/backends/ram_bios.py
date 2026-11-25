@@ -12,7 +12,7 @@ import socket
 import subprocess
 from pathlib import Path
 
-from ..core.ram import Command
+from ..core.interfaces import Command
 
 HELPER_SOCKET = "/run/rgbhub-ram.sock"
 # The helper normally answers within a tenth of a second. Waiting longer

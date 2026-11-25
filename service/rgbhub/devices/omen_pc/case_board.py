@@ -14,13 +14,12 @@ Packet layout from OpenRGB's HPOmen30LController (GPL-2.0-or-later).
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from .hidraw import HidPort, find_hid_node
+from ...core.interfaces import HidBus, HidMatch, HidPort
 
 log = logging.getLogger(__name__)
 
-HID_ID = "0003:0000103C:000084FD"  # as it appears in sysfs uevent files
+BOARD_MATCH = HidMatch(0x103C, 0x84FD)
 DEVICE_NAME = "HP Omen 30L"  # OpenRGB's name for this board
 
 # The zones that have lights on the OMEN 45L, and the board's number for each.
@@ -94,27 +93,23 @@ class _Device:
 
 
 class TracerClient:
-    def __init__(self, port, node: Path | None = None):
-        """`port` has write(bytes) and close(); `node` is its /dev path."""
+    def __init__(self, port: HidPort):
         self._port = port
-        self._node = node
         self.devices = [_Device(port)]
 
     def update(self) -> None:
         """Raise OSError if the board has gone away."""
-        if self._node is not None and not self._node.exists():
-            raise OSError(f"{self._node} is gone")
+        if not self._port.alive():
+            raise OSError("case-light board is gone")
 
     def disconnect(self) -> None:
         self._port.close()
 
 
-def open_board(
-    sys_root: Path = Path("/sys/class/hidraw"), dev_root: Path = Path("/dev")
-) -> TracerClient:
+def open_board(bus: HidBus) -> TracerClient:
     """Find and open the board. Raises OSError if it is not there."""
-    node = find_hid_node(HID_ID, b"", sys_root, dev_root)
-    if node is None:
+    path = bus.find(BOARD_MATCH)
+    if path is None:
         raise OSError("case-light board not found")
-    log.info("Case-light board found at %s", node)
-    return TracerClient(HidPort(node), node)
+    log.info("Case-light board found at %s", path)
+    return TracerClient(bus.open(path))

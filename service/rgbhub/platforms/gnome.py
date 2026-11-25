@@ -8,7 +8,7 @@ What this platform chooses:
                 (frontends/gnome-shell), which is the front end
 - case lights:  an OpenRGB server
 - RAM lights:   the root helper, which asks the BIOS
-- keyboard:     backends/via.py (a udev rule lets the owner open it)
+- keyboard:     devices/iqunix_keyboard/via.py (a udev rule lets the owner open it)
 - what is in focus: the app the extension reports; its icon comes from the
                 icon theme. With nothing in focus the LCD shows what is in
                 ~/.config/rgbhub/lcd/ if anything, else the wallpaper, and
@@ -22,19 +22,20 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from .. import iqunix_mg65, omen45l
-from ..backends import hidraw, openrgb, ram_bios, via
+from ..backends import openrgb, ram_bios
 from ..core.hub import Hub
-from ..core.lcd_fade import fade_frames
 from ..core.lcd_folder import load_lcd_folder
-from ..core.lcd_streamer import LcdStreamer
 from ..core.lights import Lights
 from ..core.look import Looks, cover_lcd
-from ..core.ram import RamLights
-from ..devices.iqunix_keyboard import IqunixKeyboard
+from ..devices.iqunix_keyboard import IqunixKeyboard, mg65, via
 from ..devices.omen_pc import OmenPc
+from ..devices.omen_pc import model as omen_model
+from ..devices.omen_pc.lcd_fade import fade_frames
+from ..devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
+from ..devices.omen_pc.ram import RamLights
 from . import glib_runtime, gnome_migrate, gnome_theme, gtk_icons, logind
 from .gsettings_store import GSettingsStore, load_settings
+from .linux.hidraw import HidrawBus
 
 log = logging.getLogger(__name__)
 
@@ -119,25 +120,26 @@ def main(argv: list[str] | None = None) -> int:
 
     theme = gnome_theme.DesktopTheme()
     looks = make_looks(theme, args.lcd_folder)
+    bus = HidrawBus()
     hub = Hub(
         settings,
         [
             OmenPc(
-                LcdStreamer(hidraw.open_lcd),
-                Lights(openrgb.connect, omen45l.HIDDEN_ZONES, omen45l.LED_GAMMA),
+                LcdStreamer(lcd_opener(bus)),
+                Lights(openrgb.connect, omen_model.HIDDEN_ZONES, omen_model.LED_GAMMA),
                 ram=RamLights(
                     ram_bios.send_to_helper,
                     ram_bios.find_sticks,
-                    gamma=omen45l.LED_GAMMA,
+                    gamma=omen_model.LED_GAMMA,
                     background=True,
                 ),
-                display_names=omen45l.DISPLAY_NAMES,
+                display_names=omen_model.DISPLAY_NAMES,
                 fade=fade_frames,
                 watch_file=glib_runtime.watch_file,
             ),
             IqunixKeyboard(
-                Lights(via.opener(iqunix_mg65.MG65), name="Keyboard lights"),
-                display_names=iqunix_mg65.DISPLAY_NAMES,
+                Lights(via.opener(mg65.MG65, bus), name="Keyboard lights"),
+                display_names=mg65.DISPLAY_NAMES,
             ),
         ],
         looks=looks,

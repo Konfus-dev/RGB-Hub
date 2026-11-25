@@ -4,7 +4,7 @@
 Pure functions only: bytes in, bytes out. Nothing here touches hardware.
 """
 
-from . import constants as c
+from . import lcd_constants as c
 
 
 def _short_report(op: int) -> bytearray:

@@ -2,7 +2,7 @@
 """Facts about the HP OMEN 45L that are the same on every operating system."""
 
 # OpenRGB calls the 45L's case-light board "HP Omen 30L"; our own driver
-# (backends/tracer.py) uses the same name so settings work with either.
+# (devices/omen_pc/case_board.py) uses the same name so settings work with either.
 CASE_DEVICE = "HP Omen 30L"
 
 # Light zones OpenRGB lists that have nothing attached on the 45L

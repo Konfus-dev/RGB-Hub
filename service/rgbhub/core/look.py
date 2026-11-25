@@ -17,8 +17,8 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageOps
 
-from .constants import LCD_SIZE
-from .image_prep import encode_for_lcd
+from ..devices.omen_pc.image_prep import encode_for_lcd
+from ..devices.omen_pc.lcd_constants import LCD_SIZE
 
 log = logging.getLogger(__name__)
 

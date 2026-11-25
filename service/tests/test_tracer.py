@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import pytest
 
-from rgbhub.backends import tracer
+from rgbhub.core.interfaces import FakeHidBus, FakeHidPort
 from rgbhub.core.lights import Colour, Lights
+from rgbhub.devices.omen_pc import case_board as tracer
 
 
 def test_direct_report_layout():
@@ -26,16 +27,24 @@ def test_direct_report_clamps_and_checks_the_zone():
         tracer.direct_report(8, 0, 0, 0)
 
 
-class Port:
-    """Stands in for the open hidraw device."""
+class Port(FakeHidPort):
+    """Stands in for the open case-light board."""
 
     def __init__(self):
-        self.reports, self.closed, self.fail = [], False, False
+        super().__init__()
+        self.closed = False
 
-    def write(self, report):
-        if self.fail:
-            raise OSError("unplugged")
-        self.reports.append(report)
+    @property
+    def reports(self):
+        return self.written
+
+    @property
+    def fail(self):
+        return not self.plugged
+
+    @fail.setter
+    def fail(self, value):
+        self.plugged = not value
 
     def close(self):
         self.closed = True
@@ -76,19 +85,26 @@ def test_an_unplugged_board_disconnects_the_lights():
     assert lights.connected is False and port.closed is True
 
 
-def test_update_notices_a_board_that_went_away(tmp_path):
-    gone = tmp_path / "hidraw9"
-    client = tracer.TracerClient(Port(), node=gone)
+def test_case_board_gone_when_port_not_alive():
+    port = Port()
+    client = tracer.TracerClient(port)
+    client.update()  # present: no error
+    port.plugged = False
     with pytest.raises(OSError):
         client.update()
-    gone.touch()
-    client.update()  # present: no error
 
 
-def test_open_board_returns_none_when_there_is_no_board(tmp_path):
-    (tmp_path / "sys").mkdir()
+def test_open_board_finds_the_board_by_its_ids():
+    port = Port()
+    bus = FakeHidBus({"board": (tracer.BOARD_MATCH, port)})
+    client = tracer.open_board(bus)
+    client.devices[0].set_colors([Colour(1, 2, 3)] * 4)
+    assert len(port.written) == 4
+
+
+def test_open_board_raises_when_there_is_no_board():
     with pytest.raises(OSError):
-        tracer.open_board(tmp_path / "sys", tmp_path / "dev")
+        tracer.open_board(FakeHidBus({}))
 
 
 def test_colour_packs_the_way_openrgb_expects():

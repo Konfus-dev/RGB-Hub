@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from rgbhub.core import lcd_protocol as p
-from rgbhub.core.lcd_streamer import LcdStreamer
+from rgbhub.core.interfaces import FakeHidBus, FakeHidPort
+from rgbhub.devices.omen_pc import lcd_protocol as p
+from rgbhub.devices.omen_pc.lcd_constants import LCD_MATCH
+from rgbhub.devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
 
 JPEG = bytes(range(256)) * 10  # 3 chunks
 
@@ -137,3 +139,24 @@ def test_oversized_image_is_refused_and_previous_kept():
     device.writes.clear()
     streamer.tick_frame()
     assert device.writes == p.frame_reports(JPEG)
+
+
+def test_lcd_opener_opens_the_vendor_interface_only():
+    from rgbhub.core.interfaces import HidMatch
+
+    mouse, vendor = FakeHidPort(), FakeHidPort()
+    bus = FakeHidBus(
+        {
+            "mouse": (HidMatch(0x03F0, 0x7397, usage_page=0x0001), mouse),
+            "vendor": (LCD_MATCH, vendor),
+        }
+    )
+    streamer = LcdStreamer(lcd_opener(bus))
+    streamer.tick_reconnect()
+    assert streamer.connected is True
+    assert vendor.written == [p.claim_report(), p.brightness_report(80)]
+    assert mouse.written == []
+
+
+def test_lcd_opener_returns_none_when_the_lcd_is_absent():
+    assert lcd_opener(FakeHidBus({}))() is None

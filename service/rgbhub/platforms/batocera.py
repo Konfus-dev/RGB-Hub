@@ -9,8 +9,8 @@ What this platform chooses:
 - front end:    the "RGB_HUB" switch under System Settings > Services,
                 plus a game hook (frontends/batocera) that writes the path
                 of the running game to a small file
-- case lights:  our own driver (backends/tracer.py); Batocera has no OpenRGB
-- keyboard:     backends/via.py, as on every system
+- case lights:  our own driver (devices/omen_pc/case_board.py); Batocera has no OpenRGB
+- keyboard:     devices/iqunix_keyboard/via.py, as on every system
 - RAM lights:   straight through the BIOS, if the acpi_call kernel module
                 is available; otherwise the RAM is left alone
 - what is in focus: the running game. Its picture is the artwork Batocera
@@ -31,20 +31,21 @@ from pathlib import Path
 
 from PIL import Image
 
-from .. import iqunix_mg65, omen45l
-from ..backends import hidraw, ram_bios, tracer, via
+from ..backends import ram_bios
 from ..core.hub import Hub
-from ..core.lcd_fade import fade_frames
 from ..core.lcd_folder import load_lcd_folder
-from ..core.lcd_streamer import LcdStreamer
 from ..core.lights import Lights
 from ..core.look import Looks, cover_lcd
-from ..core.ram import RamLights
 from ..core.settings_schema import DEFAULT_KEYS, DEVICE_IDS, migrate
-from ..devices.iqunix_keyboard import IqunixKeyboard
-from ..devices.omen_pc import OmenPc
+from ..devices.iqunix_keyboard import IqunixKeyboard, mg65, via
+from ..devices.omen_pc import OmenPc, case_board
+from ..devices.omen_pc import model as omen_model
+from ..devices.omen_pc.lcd_fade import fade_frames
+from ..devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
+from ..devices.omen_pc.ram import RamLights
 from . import batocera_games, batocera_theme, glib_runtime
 from .json_store import JsonSettings
+from .linux.hidraw import HidrawBus
 
 log = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ def _ram_lights() -> RamLights | None:
     return RamLights(
         ram_bios.direct_sender(helper, _find_sticks),
         _find_sticks,
-        gamma=omen45l.LED_GAMMA,
+        gamma=omen_model.LED_GAMMA,
         background=True,
     )
 
@@ -212,20 +213,25 @@ def main(argv: list[str] | None = None) -> int:
         load_idle=lambda: _idle_picture(args.logo),
         compose_idle=cover_lcd,  # menu backgrounds and the logo both suit a full screen
     )
+    bus = HidrawBus()
     hub = Hub(
         settings,
         [
             OmenPc(
-                LcdStreamer(hidraw.open_lcd),
-                Lights(tracer.open_board, omen45l.HIDDEN_ZONES, omen45l.LED_GAMMA),
+                LcdStreamer(lcd_opener(bus)),
+                Lights(
+                    lambda: case_board.open_board(bus),
+                    omen_model.HIDDEN_ZONES,
+                    omen_model.LED_GAMMA,
+                ),
                 ram=_ram_lights(),
-                display_names=omen45l.DISPLAY_NAMES,
+                display_names=omen_model.DISPLAY_NAMES,
                 fade=fade_frames,
                 watch_file=glib_runtime.watch_file,
             ),
             IqunixKeyboard(
-                Lights(via.opener(iqunix_mg65.MG65), name="Keyboard lights"),
-                display_names=iqunix_mg65.DISPLAY_NAMES,
+                Lights(via.opener(mg65.MG65, bus), name="Keyboard lights"),
+                display_names=mg65.DISPLAY_NAMES,
             ),
         ],
         looks=looks,

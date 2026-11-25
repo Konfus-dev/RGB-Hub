@@ -5,7 +5,7 @@ import os
 import pytest
 from PIL import Image
 
-from rgbhub.core.image_prep import ImageError, prepare_jpeg
+from rgbhub.devices.omen_pc.image_prep import ImageError, prepare_jpeg
 
 RED, BLUE, BLACK, WHITE = (255, 0, 0), (0, 0, 255), (0, 0, 0), (255, 255, 255)
 
@@ -112,7 +112,7 @@ def test_extremely_thin_images(tmp_path, size, fit):
 
 
 def test_any_failure_inside_pillow_becomes_image_error(tmp_path, monkeypatch):
-    from rgbhub.core import image_prep
+    from rgbhub.devices.omen_pc import image_prep
 
     def explode(*args, **kwargs):
         raise MemoryError("picture far too big")

@@ -81,6 +81,7 @@ def test_the_scan_sees_the_code():
     for expected in (
         "helper/rgbhub_ram_helper.py",
         "service/rgbhub/backends/ram_bios.py",
+        "service/rgbhub/devices/omen_pc/ram.py",
         "install/install-user.sh",
         "install/setup.sh",
         "frontends/batocera/services/rgb_hub",

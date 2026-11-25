@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The IQUNIX keyboard as one hub device.
 
-Its lights are one LightGroup over backends/via.py. In auto mode the whole
+Its lights are one LightGroup over via.py. In auto mode the whole
 keyboard takes the colour of what is in focus. When the hub stops, the
 Default look is stored in the keyboard itself, so it stays after the
 computer stops talking to it (in Windows, say, or with the PC off).
 """
 
-from ..core.light_group import LightGroup
-from ..core.lights import Lights
+from ...core.light_group import LightGroup
+from ...core.lights import Lights
 
 DEVICE_ID = "IQUNIX-KEYBOARD"
 
@@ -18,7 +18,7 @@ class IqunixKeyboard:
     label = "IQUNIX-KEYBOARD"
 
     def __init__(self, lights: Lights, display_names: dict[str, str] | None = None):
-        """`lights` drives the keyboard (Lights over backends/via.py)."""
+        """`lights` drives the keyboard (Lights over via.py)."""
         self._lights = lights
         self._display_names = display_names or {}
         self._hub = None

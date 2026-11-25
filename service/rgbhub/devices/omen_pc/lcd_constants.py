@@ -6,12 +6,12 @@ https://github.com/Xedecimal/omen-led-lcd (PROTOCOL_NOTES.md) and were
 confirmed on an OMEN 45L GT22-3xxx, LCD firmware V3.05.024.
 """
 
+from ...core.interfaces import HidMatch
+
 # --- Cooler LCD ("LCD-PUMP", USB 03f0:7397) ---------------------------------
-LCD_HID_ID = "0003:000003F0:00007397"  # as it appears in sysfs uevent files
-# The LCD exposes two HID interfaces. The one we want starts its report
-# descriptor with this vendor usage page; the other is a mouse-class
-# interface that must never be written to.
-LCD_DESCRIPTOR_PREFIX = bytes.fromhex("061aff")
+# The LCD exposes two HID interfaces. The one we want has this vendor usage
+# page; the other is a mouse-class interface that must never be written to.
+LCD_MATCH = HidMatch(0x03F0, 0x7397, usage_page=0xFF1A)
 
 LCD_SIZE = 480  # the screen is 480x480 pixels
 

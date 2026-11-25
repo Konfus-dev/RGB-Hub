@@ -6,9 +6,9 @@ import pytest
 from gi.repository import GLib
 
 from rgbhub.core.hub import Hub
-from rgbhub.core.image_prep import ImageError
 from rgbhub.core.lights import DeviceInfo, EffectOptions
 from rgbhub.devices.omen_pc import OmenPc
+from rgbhub.devices.omen_pc.image_prep import ImageError
 from rgbhub.platforms.gsettings_store import GSettingsStore as Store
 
 

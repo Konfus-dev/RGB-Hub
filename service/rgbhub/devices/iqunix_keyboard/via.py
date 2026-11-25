@@ -12,7 +12,7 @@ A set changes only what the keyboard shows now; a save is what makes it
 keep the look after the computer stops talking to it. Saves are sent only
 when the hub stops (see core/hub.py), never while drawing.
 
-To lights.py this looks like an OpenRGB client (as backends/tracer.py does):
+To lights.py this looks like an OpenRGB client (as devices/omen_pc/case_board.py does):
 one device with `modes`, `zones` and `set_mode()`. Every mode carries one
 colour, so lights.py hands the colour over with the mode; nothing is drawn
 frame by frame. Only values that changed are sent.
@@ -20,12 +20,10 @@ frame by frame. Only values that changed are sent.
 
 import colorsys
 import logging
-import os
-import select
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from .hidraw import HidPort, find_hid_node
+from ...core.interfaces import HidBus, HidMatch, HidPort
 
 log = logging.getLogger(__name__)
 
@@ -35,10 +33,6 @@ REPLY_WAIT_S = 0.05  # each command is answered; wait this long for the answer
 SET_VALUE, GET_VALUE, SAVE = 0x07, 0x08, 0x09
 CHANNEL_RGB_MATRIX = 3
 VALUE_BRIGHTNESS, VALUE_EFFECT, VALUE_SPEED, VALUE_COLOUR = 1, 2, 3, 4
-
-# The interface whose report descriptor starts like this is VIA's
-# (usage page 0xFF60, usage 0x61).
-VIA_DESCRIPTOR_PREFIX = bytes.fromhex("0660ff0961")
 
 OFF_MODE = "Off"
 
@@ -80,7 +74,7 @@ class KeyboardModel:
     """What differs between keyboards: their name and their effects."""
 
     name: str
-    hid_id: str  # as in sysfs uevent files, "0003:VVVVVVVV:PPPPPPPP"
+    match: HidMatch  # the keyboard's VIA interface (usage page 0xFF60, usage 0x61)
     effects: tuple[tuple[str, int], ...]  # (name, VIA effect number); first is the plain colour
     moving: tuple[str, ...] = ()  # effects that have a speed
     max_brightness: int = 255  # the keyboard's brightest value
@@ -111,7 +105,7 @@ class _Zone:
 
 
 class _Keyboard:
-    def __init__(self, port, model: KeyboardModel):
+    def __init__(self, port: HidPort, model: KeyboardModel):
         self._port = port
         self._model = model
         self.name = model.name
@@ -148,48 +142,33 @@ class _Keyboard:
     def save(self) -> None:
         """Make the keyboard keep what it shows now."""
         self._port.write(save_report())
-        self._port.drain()
+        self._drain()
         log.info("Keyboard: look stored in the keyboard")
+
+    def _drain(self) -> None:
+        """Read and drop the keyboard's answers, so answers never pile up."""
+        while self._port.read(REPLY_WAIT_S) is not None:
+            pass
 
     def _set(self, value_id: int, *data: int) -> None:
         if self._sent.get(value_id) == data:
             return
         self._port.write(set_report(value_id, *data))
-        self._port.drain()
+        self._drain()
         self._sent[value_id] = data
         log.debug("Keyboard: value %d = %s", value_id, data)
 
 
-class ViaPort(HidPort):
-    """An open VIA interface. write(report), drain() and close(); OSError on failure."""
-
-    def __init__(self, node: Path):
-        super().__init__(node, os.O_NONBLOCK)
-
-    def drain(self) -> None:
-        """Read and drop the keyboard's answer, so answers never pile up."""
-        if self._fd is None:
-            return
-        ready, _, _ = select.select([self._fd], [], [], REPLY_WAIT_S)
-        while ready:
-            try:
-                os.read(self._fd, 64)
-            except BlockingIOError:
-                return
-            ready, _, _ = select.select([self._fd], [], [], 0)
-
-
 class ViaClient:
-    def __init__(self, port, model: KeyboardModel, node: Path | None = None):
+    def __init__(self, port: HidPort, model: KeyboardModel):
         self._port = port
-        self._node = node
         self.keyboard = _Keyboard(port, model)
         self.devices = [self.keyboard]
 
     def update(self) -> None:
         """Raise OSError if the keyboard has gone away."""
-        if self._node is not None and not self._node.exists():
-            raise OSError(f"{self._node} is gone")
+        if not self._port.alive():
+            raise OSError(f"{self.keyboard.name} is gone")
 
     def save(self) -> None:
         self.keyboard.save()
@@ -198,16 +177,14 @@ class ViaClient:
         self._port.close()
 
 
-def opener(
-    model: KeyboardModel, sys_root: Path = Path("/sys/class/hidraw"), dev_root: Path = Path("/dev")
-):
+def opener(model: KeyboardModel, bus: HidBus) -> Callable[[], ViaClient]:
     """A function that finds and opens the keyboard (raises OSError if absent)."""
 
     def open_keyboard() -> ViaClient:
-        node = find_hid_node(model.hid_id, VIA_DESCRIPTOR_PREFIX, sys_root, dev_root)
-        if node is None:
+        path = bus.find(model.match)
+        if path is None:
             raise OSError(f"{model.name} not found")
-        log.info("%s found at %s", model.name, node)
-        return ViaClient(ViaPort(node), model, node)
+        log.info("%s found at %s", model.name, path)
+        return ViaClient(bus.open(path, nonblocking=True), model)
 
     return open_keyboard

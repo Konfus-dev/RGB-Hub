@@ -49,7 +49,7 @@ as the file is saved. Only list what you want to change, for example:
 | `device-enabled` | Lights on or off, per device | on |
 | `device-brightness` | Light brightness per device, percent | `100` |
 | `lcd-brightness` | Cooler screen brightness, percent | `80` |
-| `device-modes` | Effect per light: `HP Omen 30L` and `RAM`: `Static` or `Breathing` (RAM also `Rainbow`, which ignores colours); `IQUNIX MG65`: `Static`, `Wave`, `Breathe`, `Rain` and others (see `service/rgbhub/iqunix_mg65.py`) | `Static` |
+| `device-modes` | Effect per light: `HP Omen 30L` and `RAM`: `Static` or `Breathing` (RAM also `Rainbow`, which ignores colours); `IQUNIX MG65`: `Static`, `Wave`, `Breathe`, `Rain` and others (see `service/rgbhub/devices/iqunix_keyboard/mg65.py`) | `Static` |
 | `zone-colours` | Colour per zone, e.g. `"IQUNIX MG65/All keys": "#800080"` | white |
 | `lcd-image` | Picture shown when auto mode is off | none |
 | `default-look` | The Default look (written by `"default-action": "save"`) | |

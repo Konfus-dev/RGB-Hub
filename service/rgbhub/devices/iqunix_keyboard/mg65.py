@@ -2,11 +2,12 @@
 """Facts about the IQUNIX MG65 keyboard that are the same on every system.
 
 USB 320f:5055. It runs VIA-compatible firmware (VIA protocol 11), with its
-lights on VIA's "RGB matrix" channel (see backends/via.py). Effect names
+lights on VIA's "RGB matrix" channel (see via.py). Effect names
 and ranges are from IQUNIX's VIA definition and were checked on the board.
 """
 
-from .backends.via import KeyboardModel
+from ...core.interfaces import HidMatch
+from .via import KeyboardModel
 
 DEVICE_NAME = "IQUNIX MG65"  # the key for its lighting settings
 
@@ -42,7 +43,7 @@ EFFECTS = (
 
 MG65 = KeyboardModel(
     name=DEVICE_NAME,
-    hid_id="0003:0000320F:00005055",
+    match=HidMatch(0x320F, 0x5055, usage_page=0xFF60, usage=0x61),
     effects=EFFECTS,
     moving=tuple(name for name, _ in EFFECTS[1:]),
     max_brightness=9,  # its brightness runs 0..9 (higher values read back as 9)

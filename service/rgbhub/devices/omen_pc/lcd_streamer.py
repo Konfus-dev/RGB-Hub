@@ -9,11 +9,27 @@ tell it what to show, call its tick_* methods on timers, and it copes.
 import logging
 from collections.abc import Callable
 
+from ...core.interfaces import HidBus, HidPort
 from . import lcd_protocol
+from .lcd_constants import LCD_MATCH
 
 log = logging.getLogger(__name__)
 
 DEFAULT_BRIGHTNESS = 80
+
+
+def lcd_opener(bus: HidBus) -> Callable[[], HidPort | None]:
+    """A function that opens the cooler LCD, or returns None if it is not there.
+
+    Opened non-blocking: a write the LCD cannot take fails (and the streamer
+    reconnects) instead of holding up the service.
+    """
+
+    def open_lcd() -> HidPort | None:
+        path = bus.find(LCD_MATCH)
+        return bus.open(path, nonblocking=True) if path else None
+
+    return open_lcd
 
 
 class LcdStreamer:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from rgbhub.backends.ram_bios import find_sticks
 from rgbhub.core.lights import DeviceInfo, EffectOptions
-from rgbhub.core.ram import RamLights, commands
+from rgbhub.devices.omen_pc.ram import RamLights, commands
 
 BEGIN, END = 0x53, 0x44
 LEFT, RIGHT = 0xC2, 0xC6  # slots 1 and 3, as on the test machine

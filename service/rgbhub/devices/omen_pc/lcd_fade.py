@@ -6,8 +6,8 @@ from collections.abc import Iterator
 
 from PIL import Image
 
-from .constants import LCD_SIZE, MAX_JPEG_BYTES
 from .image_prep import encode_for_lcd
+from .lcd_constants import LCD_SIZE, MAX_JPEG_BYTES
 
 FADE_JPEG_QUALITY = 75  # in-between frames are on screen for a blink; small beats sharp
 

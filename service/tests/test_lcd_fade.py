@@ -3,7 +3,7 @@ import io
 
 from PIL import Image
 
-from rgbhub.core.lcd_fade import fade_frames
+from rgbhub.devices.omen_pc.lcd_fade import fade_frames
 
 
 def jpeg(colour):
