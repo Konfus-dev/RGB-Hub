@@ -321,6 +321,11 @@ ALLOWED_PROGRAMS = {
     "service/rgbhub/platforms/linux/ram.py": "dmidecode -t 17: the BIOS's memory table, no bus",
     "install/enable-gnome-extension.py": "gsettings get/set org.gnome.shell (installer)",
     "helper/rgbhub_ram_helper_windows.py": "Windows PowerShell: HP's BIOS WMI method, no bus",
+    "service/rgbhub/platforms/windows/__init__.py": (
+        "PowerShell Get-CimInstance Win32_ComputerSystem (VM check), icacls on runtime.json, "
+        "Edge for the settings page"
+    ),
+    "service/rgbhub/platforms/windows/launcher.py": "the hub itself, in a child Python",
 }
 STARTS_PROGRAM = re.compile(r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*)\b")
 
@@ -340,6 +345,24 @@ def test_python_starts_only_the_listed_programs():
         "".join(dict(FILES)[name] for name in ALLOWED_PROGRAMS),
     )
     assert len(commands) == 4
+
+
+def test_the_windows_platform_starts_only_its_own_programs():
+    text = dict(FILES)["service/rgbhub/platforms/windows/__init__.py"]
+    assert re.findall(r"\bsubprocess\.(?:run|Popen|call|check_\w+|getoutput)\b", text) == [
+        "subprocess.run",  # in_virtual_machine
+        "subprocess.run",  # _owner_only
+        "subprocess.Popen",  # open_settings_window's default
+    ]
+    assert '"$c = Get-CimInstance Win32_ComputerSystem; $c.Manufacturer; $c.Model"' in text
+    assert '["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"]' in text
+    assert 'popen([edge, f"--app={url}", f"--window-size={EDGE_WINDOW_SIZE}"])' in text
+    launcher = dict(FILES)["service/rgbhub/platforms/windows/launcher.py"]
+    assert re.findall(r"\bsubprocess\.(?:run|Popen|call|check_\w+|getoutput)\b", launcher) == [
+        "subprocess.run",
+        "subprocess.run",
+    ]
+    assert 'return [python, "-I", "-c", CHILD_CODE, *paths, *args]' in launcher
 
 
 def test_the_windows_helper_starts_only_powershell():

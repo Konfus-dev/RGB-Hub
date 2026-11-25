@@ -17,8 +17,10 @@ PLATFORMS = ("gnome", "batocera", "windows")
 
 
 def detect() -> str:
-    """Batocera identifies itself with this file; everything else is
-    treated as a GNOME desktop for now."""
+    """Windows by its name; Batocera identifies itself with this file;
+    everything else is treated as a GNOME desktop for now."""
+    if sys.platform == "win32":
+        return "windows"
     return "batocera" if Path("/usr/share/batocera/batocera.version").exists() else "gnome"
 
 
