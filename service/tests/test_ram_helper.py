@@ -215,3 +215,49 @@ def test_every_allowed_command_is_the_bios_lighting_call():
                 )
                 assert command.startswith(h.ACPI_METHOD + " b" + h.REQUEST_HEAD)
                 assert command.endswith(f"{register:02x}{value:02x}{address:02x}")
+
+
+# --- the transport is swappable; the checks are not ----------------------------------
+
+
+def test_handle_line_uses_given_deliver():
+    delivered = []
+
+    def deliver(address, register, value):
+        delivered.append((address, register, value))
+        return True
+
+    present = {0xC2}.__contains__
+    assert h.handle_line("W c2 20 32", present=present, deliver=deliver) == "OK"
+    assert delivered == [(0xC2, 0x20, 50)]
+    # Refused by the checks: never reaches the transport.
+    for line in ("W c2 06 00", "W a0 20 32", "W c2 20 65", "W c6 20 32"):
+        assert h.handle_line(line, present=present, deliver=deliver).startswith("ERR")
+    assert delivered == [(0xC2, 0x20, 50)]
+
+
+def test_handle_line_reports_a_refused_delivery():
+    answer = h.handle_line(
+        "W c2 20 32", present=lambda a: True, deliver=lambda a, r, v: False, sleep=lambda s: None
+    )
+    assert answer.startswith("ERR")
+
+
+def test_handle_line_survives_delivery_errors():
+    def deliver(address, register, value):
+        raise OSError("no BIOS")
+
+    answer = h.handle_line("W c2 20 32", present=lambda a: True, deliver=deliver)
+    assert answer.startswith("ERR")
+
+
+def test_acpi_deliver_sends_the_bios_command():
+    sent = []
+
+    def call(command):
+        sent.append(command)
+        return "{0x50, 0x41, 0x53, 0x53, 0x00, 0x00, 0x00, 0x00}"
+
+    assert h.acpi_deliver(0xC2, 0x20, 0x64, call=call)
+    assert sent == [h.acpi_command(0xC2, 0x20, 0x64)]
+    assert not h.acpi_deliver(0xC2, 0x20, 0x64, call=lambda c: "Error: AE_NOT_FOUND")

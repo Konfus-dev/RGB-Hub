@@ -15,6 +15,12 @@ the installing user may open:
     PING                                                         ->  OK
 
 Needs the acpi_call kernel module (Ubuntu package acpi-call-dkms).
+
+The checks (parse_request, handle_line) are shared with the Windows helper
+(rgbhub_ram_helper_windows.py), which hands the same request to the BIOS
+through WMI instead of acpi_call: handle_line takes the way of delivering a
+checked write as `deliver`, so there is still one place that decides what
+may be sent.
 """
 
 import socket
@@ -112,13 +118,26 @@ def call_bios(command: str) -> str:
     return ACPI_CALL.read_text().strip("\0\n ")
 
 
+def acpi_deliver(address: int, register: int, value: int, call=None) -> bool:
+    """Write one checked value through acpi_call; True if the BIOS accepted it."""
+    return reply_ok((call or call_bios)(acpi_command(address, register, value)))
+
+
 def handle_line(
-    line: str, call=None, i2c_devices: Path = I2C_DEVICES, sleep=None, present=None, ready=None
+    line: str,
+    call=None,
+    i2c_devices: Path = I2C_DEVICES,
+    sleep=None,
+    present=None,
+    ready=None,
+    deliver=None,
 ) -> str:
     """Process one request line and return the reply line.
 
     `present(address)` says whether a stick is fitted at that address; by
-    default the kernel's list of sticks is consulted.
+    default the kernel's list of sticks is consulted. `deliver(address,
+    register, value)` hands a request that passed every check to the BIOS
+    and says whether it was accepted; by default that is acpi_deliver.
     """
     call = call or call_bios
     sleep = sleep or time.sleep
@@ -137,10 +156,14 @@ def handle_line(
     if not fitted:
         return "ERR no RAM stick in that slot"
     try:
-        reply = call(acpi_command(address, register, value))
+        if deliver is None:
+            accepted = acpi_deliver(address, register, value, call)
+        else:
+            accepted = deliver(address, register, value)
     except OSError as error:
-        return f"ERR cannot reach the BIOS ({error}); is acpi_call loaded?"
-    if not reply_ok(reply):
+        hint = "; is acpi_call loaded?" if deliver is None else ""
+        return f"ERR cannot reach the BIOS ({error}){hint}"
+    if not accepted:
         return "ERR the BIOS refused the command"
     sleep(PAUSE_AFTER_TRANSFER_S if register == REG_TRANSFER else PAUSE_AFTER_WRITE_S)
     return "OK"

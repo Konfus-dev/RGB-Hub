@@ -36,6 +36,8 @@ FORBIDDEN = [
     (r"\bi2c(?:get|set|detect|transfer|dump)\b", "i2c-tools"),
     (r"\bdecode-dimms\b", "i2c-tools (reads the SPD EEPROM)"),
     (r"\bi2c-tools\b", "i2c-tools"),
+    # Windows: the port-access drivers that SMBus tools (OpenRGB among them) use.
+    (r"(?i)\bwinring0|\binpout", "raw port access on Windows"),
 ]
 
 # Mentions of the I2C bus that are allowed, and why. Only these files may
@@ -82,6 +84,8 @@ def test_the_scan_sees_the_code():
         "helper/rgbhub_ram_helper.py",
         "service/rgbhub/platforms/linux/ram.py",
         "service/rgbhub/devices/omen_pc/ram.py",
+        "helper/rgbhub_ram_helper_windows.py",
+        "service/rgbhub/platforms/windows/ram.py",
         "install/install-user.sh",
         "install/setup.sh",
         "frontends/batocera/services/rgb_hub",
@@ -102,6 +106,34 @@ def test_nothing_reaches_the_ram_bus_directly(pattern, why):
         if regex.search(line)
     ]
     assert hits == [], f"{why} found; this jams the RAM bus on the OMEN 45L:\n" + "\n".join(hits)
+
+
+# The code that deals with the RAM. None of it may name the light controllers'
+# own bus addresses: it only ever names them as the BIOS wants them (0xC0-0xC6).
+RAM_CODE = [
+    name
+    for name, _ in FILES
+    if name.startswith(("helper/", "service/rgbhub/platforms/windows/"))
+    or name
+    in {
+        "service/rgbhub/platforms/linux/ram.py",
+        "service/rgbhub/devices/omen_pc/ram.py",
+    }
+]
+CONTROLLER_ADDRESS = re.compile(r"\b0x6[13]\b|\b0x[cC][2-7]\s*>>|\b9[79]\b", re.IGNORECASE)
+
+
+def test_the_ram_code_never_names_the_controllers_bus_addresses():
+    assert "helper/rgbhub_ram_helper_windows.py" in RAM_CODE
+    assert "service/rgbhub/platforms/windows/ram.py" in RAM_CODE
+    hits = [
+        f"{name}:{number}: {line.strip()}"
+        for name, text in FILES
+        if name in RAM_CODE
+        for number, line in enumerate(text.splitlines(), 1)
+        if CONTROLLER_ADDRESS.search(line)
+    ]
+    assert hits == [], "\n".join(hits)
 
 
 def test_only_the_listed_files_mention_i2c():
@@ -143,6 +175,7 @@ ALLOWED_PROGRAMS = {
     "service/rgbhub/platforms/gnome/gnome_migrate.py": "dconf dump: reads old settings",
     "service/rgbhub/platforms/linux/ram.py": "dmidecode -t 17: the BIOS's memory table, no bus",
     "install/enable-gnome-extension.py": "gsettings get/set org.gnome.shell (installer)",
+    "helper/rgbhub_ram_helper_windows.py": "Windows PowerShell: HP's BIOS WMI method, no bus",
 }
 STARTS_PROGRAM = re.compile(r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*)\b")
 
@@ -157,10 +190,17 @@ def test_python_starts_only_the_listed_programs():
     assert starting == set(ALLOWED_PROGRAMS)
     commands = re.findall(
         r'\["dconf", "dump"|\("dmidecode", "-t", "17"\)'
-        r'|os\.environ\.get\("GSETTINGS", "gsettings"\)',
+        r'|os\.environ\.get\("GSETTINGS", "gsettings"\)'
+        r'|\[str\(exe\), "-NoProfile", "-NonInteractive", "-Command", "-"\]',
         "".join(dict(FILES)[name] for name in ALLOWED_PROGRAMS),
     )
-    assert len(commands) == 3
+    assert len(commands) == 4
+
+
+def test_the_windows_helper_starts_only_powershell():
+    text = dict(FILES)["helper/rgbhub_ram_helper_windows.py"]
+    assert re.findall(r"\bsubprocess\.\w+\(", text) == ["subprocess.Popen("]
+    assert "self._command or powershell_command()" in text
 
 
 # --- the RAM's bus is root-only on the PC (install/71-rgbhub-ram-bus-lock.rules) ---------------
