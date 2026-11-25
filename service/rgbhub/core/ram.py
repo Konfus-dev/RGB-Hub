@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 
+from .interfaces import Command
 from .lights import DEFAULT_COLOUR, DeviceInfo, EffectOptions, scale_colour, zone_key
 
 log = logging.getLogger(__name__)
@@ -52,8 +53,6 @@ RAINBOW_SPEED_SLOWEST, RAINBOW_SPEED_FASTEST = 50, 0  # register value; smaller 
 BREATH_STEP_SLOWEST, BREATH_STEP_FASTEST = 9, 1  # length of one fade step; smaller is faster
 BREATH_HOLD_DIM = 1
 BREATH_MID_POINT = 0.64  # where the "mid" level sits between dimmest and brightest
-
-Command = tuple[int, int, int]  # (stick address, register, value)
 
 
 def _between(slowest: int, fastest: int, percent: int) -> int:
