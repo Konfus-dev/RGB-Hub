@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..core.settings_schema import DEFAULTS, valid
+from .settings_schema import DEFAULTS, valid
 
 log = logging.getLogger(__name__)
 

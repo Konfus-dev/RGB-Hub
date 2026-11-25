@@ -15,7 +15,7 @@ dependencies = ["openrgb-python==0.3.8"]
 dev = ["pytest", "ruff"]
 
 [tool.setuptools.packages.find]
-# rgbhub and its sub-packages (core, devices, backends, platforms).
+# rgbhub and its sub-packages (core, devices, platforms).
 include = ["rgbhub*"]
 
 [tool.ruff]

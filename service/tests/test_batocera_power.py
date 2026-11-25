@@ -44,8 +44,8 @@ def test_waking_without_having_slept_is_harmless(tmp_path):
 
 
 def test_subject_reader_copies_the_hooks_file_into_the_settings(tmp_path):
+    from rgbhub.core.json_store import JsonSettings
     from rgbhub.platforms.batocera import subject_reader
-    from rgbhub.platforms.json_store import JsonSettings
 
     now_playing = tmp_path / "now-playing"
     settings = JsonSettings(tmp_path / "settings.json")

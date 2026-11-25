@@ -140,7 +140,7 @@ def test_setup_only_loads_the_module():
 
 # Every place in the Python code that starts another program, and why it is safe.
 ALLOWED_PROGRAMS = {
-    "service/rgbhub/platforms/gnome_migrate.py": "dconf dump: reads old settings",
+    "service/rgbhub/platforms/gnome/gnome_migrate.py": "dconf dump: reads old settings",
     "service/rgbhub/platforms/linux/ram.py": "dmidecode -t 17: the BIOS's memory table, no bus",
     "install/enable-gnome-extension.py": "gsettings get/set org.gnome.shell (installer)",
 }

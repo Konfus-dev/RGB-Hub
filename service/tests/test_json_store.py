@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 
+from rgbhub.core.json_store import JsonSettings
 from rgbhub.core.settings_schema import DEFAULTS
-from rgbhub.platforms.json_store import JsonSettings
 
 
 def test_missing_file_gives_defaults(tmp_path):

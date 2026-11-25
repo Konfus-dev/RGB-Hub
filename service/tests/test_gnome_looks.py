@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from rgbhub.platforms import gnome, gtk_icons
+from rgbhub.platforms import gnome
+from rgbhub.platforms.gnome import gtk_icons
 
 
 def test_auto_mode_follows_an_icon_theme_changed_after_start(monkeypatch, tmp_path):

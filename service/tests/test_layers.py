@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 CORE = Path(__file__).resolve().parents[1] / "rgbhub" / "core"
-FORBIDDEN = ("devices", "platforms", "backends")
+FORBIDDEN = ("devices", "platforms")
 
 
 def _imports(path: Path):

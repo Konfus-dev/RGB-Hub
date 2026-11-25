@@ -5,8 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rgbhub.backends import openrgb
-from rgbhub.backends.openrgb import (
+from rgbhub.platforms.linux import openrgb
+from rgbhub.platforms.linux.openrgb import (
     DETECTORS,
     MIN_KNOWN_DETECTORS,
     program_unchanged,
@@ -151,11 +151,11 @@ def test_start_is_refused_after_an_update_even_with_a_full_list(tmp_path):
 
 
 def run_module(*args, path):
-    """python -m rgbhub.backends.openrgb, as the systemd unit runs it. Only a
+    """python -m rgbhub.platforms.linux.openrgb, as the systemd unit runs it. Only a
     fake openrgb file is on PATH; it is looked at, never run."""
     env = {**os.environ, "PATH": str(path), "PYTHONPATH": str(REPO / "service")}
     return subprocess.run(
-        [sys.executable, "-m", "rgbhub.backends.openrgb", *args],
+        [sys.executable, "-m", "rgbhub.platforms.linux.openrgb", *args],
         env=env,
         capture_output=True,
         text=True,
@@ -194,7 +194,7 @@ def test_the_server_unit_restricts_and_checks_before_it_starts_openrgb():
     pre = [line.split("=", 1)[1] for line in lines if line.startswith("ExecStartPre=")]
     start = [line.split("=", 1)[1] for line in lines if line.startswith("ExecStart=")]
     folder = "%h/.config/rgbhub/openrgb"
-    module = "%h/.local/share/rgbhub/venv/bin/python -m rgbhub.backends.openrgb"
+    module = "%h/.local/share/rgbhub/venv/bin/python -m rgbhub.platforms.linux.openrgb"
     # A leading "-" would let OpenRGB start even when a check fails.
     assert pre == [
         f"{module} {folder} %h/.config/OpenRGB/OpenRGB.json",

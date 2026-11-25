@@ -9,7 +9,7 @@ bus stop responding until the next reboot (the RAM temperature sensors go
 dead). So OpenRGB gets its own configuration folder in which every hardware
 detector is switched off except the ones named in DETECTORS below.
 
-Run as:  python -m rgbhub.backends.openrgb <config folder> [other OpenRGB.json ...]
+Run as:  python -m rgbhub.platforms.linux.openrgb <config folder> [other OpenRGB.json ...]
 Prints how many detectors it now knows about.
 
 OpenRGB runs any detector its config does not name, so a newer OpenRGB with

@@ -222,7 +222,7 @@ def test_batocera_moves_the_old_folder_and_settings(tmp_path):
 
 
 def test_gnome_reads_the_old_dconf_dump():
-    from rgbhub.platforms.gnome_migrate import parse_dump
+    from rgbhub.platforms.gnome.gnome_migrate import parse_dump
 
     dump = "[/]\nauto-enabled=true\ndevice-speeds={'RAM': 35}\nlcd-image='/a b.jpg'\n"
     assert parse_dump(dump) == {

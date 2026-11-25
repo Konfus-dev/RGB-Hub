@@ -153,5 +153,8 @@ def test_the_launch_pattern_finds_launches():
         'timeout 120 "$openrgb" --config "$folder"',
     ):
         assert LAUNCH.search(line), line
-    for line in ("python -m rgbhub.backends.openrgb --check-program x", "openrgb-server.service"):
+    for line in (
+        "python -m rgbhub.platforms.linux.openrgb --check-program x",
+        "openrgb-server.service",
+    ):
         assert not LAUNCH.search(line), line

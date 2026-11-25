@@ -71,11 +71,11 @@ glib-compile-schemas --strict "$repo/frontends/gnome-shell/$uuid/schemas"
 
 echo "==> OpenRGB limited to the case-light board"
 orgb="$HOME/.config/rgbhub/openrgb"
-known="$("$venv/bin/python" -m rgbhub.backends.openrgb "$orgb" "$HOME/.config/OpenRGB/OpenRGB.json")"
+known="$("$venv/bin/python" -m rgbhub.platforms.linux.openrgb "$orgb" "$HOME/.config/OpenRGB/OpenRGB.json")"
 # A different OpenRGB than last time may have detectors our list does not
 # name, and it runs any it does not find there. Learn its list afresh.
 rescan=0
-if [[ -e "$orgb/openrgb-program" ]] && ! "$venv/bin/python" -m rgbhub.backends.openrgb --check-program "$orgb" 2>/dev/null; then
+if [[ -e "$orgb/openrgb-program" ]] && ! "$venv/bin/python" -m rgbhub.platforms.linux.openrgb --check-program "$orgb" 2>/dev/null; then
     echo "    OpenRGB has been updated; checking its hardware detectors again."
     rescan=1
 fi
@@ -89,7 +89,7 @@ if (( known < 100 || rescan )); then
         echo "       again and type 'scan', or add --allow-detector-scan." >&2
         exit 1
     fi
-    known="$("$venv/bin/python" -m rgbhub.backends.openrgb "$orgb")"
+    known="$("$venv/bin/python" -m rgbhub.platforms.linux.openrgb "$orgb")"
     if (( known < 100 )); then
         # Starting OpenRGB without that list would let it probe everything,
         # RAM included, at every login. Better to stop here.
@@ -98,7 +98,7 @@ if (( known < 100 || rescan )); then
         exit 1
     fi
 fi
-"$venv/bin/python" -m rgbhub.backends.openrgb --record-program "$orgb"
+"$venv/bin/python" -m rgbhub.platforms.linux.openrgb --record-program "$orgb"
 
 # The RAM helper runs as root from its own copy, which only setup.sh updates.
 installed_helper=/usr/local/lib/rgbhub/rgbhub_ram_helper.py

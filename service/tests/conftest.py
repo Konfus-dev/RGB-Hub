@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from gi.repository import Gio
 
-from rgbhub.platforms.gsettings_store import load_settings
+from rgbhub.platforms.gnome.gsettings_store import load_settings
 
 REPO = Path(__file__).resolve().parents[2]
 SCHEMA_SOURCE = REPO / "frontends" / "gnome-shell" / "rgbhub@konfus-dev.github.io" / "schemas"

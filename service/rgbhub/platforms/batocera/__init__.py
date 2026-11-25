@@ -31,21 +31,23 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..core.hub import Hub
-from ..core.lcd_folder import load_lcd_folder
-from ..core.lights import Lights
-from ..core.look import Looks, cover_lcd
-from ..core.settings_schema import DEFAULT_KEYS, DEVICE_IDS, migrate
-from ..devices.iqunix_keyboard import IqunixKeyboard, mg65, via
-from ..devices.omen_pc import OmenPc, case_board
-from ..devices.omen_pc import model as omen_model
-from ..devices.omen_pc.lcd_fade import fade_frames
-from ..devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
-from ..devices.omen_pc.ram import RamLights
-from . import batocera_games, batocera_theme, glib_runtime
-from .json_store import JsonSettings
-from .linux.hidraw import HidrawBus
-from .linux.ram import AcpiRamBus, find_sticks, find_sticks_dmi
+from ...core.hub import Hub
+from ...core.json_store import JsonSettings
+from ...core.lcd_folder import load_lcd_folder
+from ...core.lights import Lights
+from ...core.look import Looks, cover_lcd
+from ...core.settings_schema import DEFAULT_KEYS, DEVICE_IDS, migrate
+from ...devices.iqunix_keyboard import IqunixKeyboard, mg65, via
+from ...devices.omen_pc import OmenPc, case_board
+from ...devices.omen_pc import model as omen_model
+from ...devices.omen_pc.lcd_fade import fade_frames
+from ...devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
+from ...devices.omen_pc.ram import RamLights
+from ..linux.glib_runtime import GLibRuntime, on_signal
+from ..linux.hidraw import HidrawBus
+from ..linux.ram import AcpiRamBus, find_sticks, find_sticks_dmi
+from . import games as batocera_games
+from . import theme as batocera_theme
 
 log = logging.getLogger(__name__)
 
@@ -212,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         load_idle=lambda: _idle_picture(args.logo),
         compose_idle=cover_lcd,  # menu backgrounds and the logo both suit a full screen
     )
+    runtime = GLibRuntime()
     bus = HidrawBus()
     hub = Hub(
         settings,
@@ -226,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 ram=_ram_lights(),
                 display_names=omen_model.DISPLAY_NAMES,
                 fade=fade_frames,
-                watch_file=glib_runtime.watch_file,
+                watch_file=runtime.watch_file,
             ),
             IqunixKeyboard(
                 Lights(via.opener(mg65.MG65, bus), name="Keyboard lights"),
@@ -234,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         ],
         looks=looks,
-        scheduler=glib_runtime.GLibScheduler(),
+        scheduler=runtime,
     )
     # Three ways to hear that a game started or stopped, because missing it
     # means the PC never changes: the hook signals us (SIGHUP), the file is
@@ -243,9 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     args.subject_file.touch()
     read_subject = subject_reader(args.subject_file, settings)
     read_subject()
-    glib_runtime.on_signal(signal.SIGHUP, read_subject)
-    stop_following = glib_runtime.watch_file(str(args.subject_file), read_subject)
-    stop_watching = glib_runtime.watch_file(str(args.settings), settings.reload)
+    on_signal(signal.SIGHUP, read_subject)
+    stop_following = runtime.watch_file(str(args.subject_file), read_subject)
+    stop_watching = runtime.watch_file(str(args.settings), settings.reload)
 
     theme_seen = [_mtime(batocera_theme.ES_SETTINGS)]
 
@@ -265,12 +268,12 @@ def main(argv: list[str] | None = None) -> int:
     # signal would end the program instead of being handled.
     going_to_sleep, woke_up = power_handlers(hub, ASLEEP_MARKER)
     ASLEEP_MARKER.unlink(missing_ok=True)
-    glib_runtime.on_signal(signal.SIGUSR1, going_to_sleep)
-    glib_runtime.on_signal(signal.SIGUSR2, woke_up)
-    glib_runtime.GLibScheduler().every(POLL_MS, look_again)
+    on_signal(signal.SIGUSR1, going_to_sleep)
+    on_signal(signal.SIGUSR2, woke_up)
+    runtime.every(POLL_MS, look_again)
     hub.start()
     log.info("RGB-Hub running (Batocera)")
-    glib_runtime.run_until_stopped()
+    runtime.run_until_stopped()
     stop_following()
     stop_watching()
     hub.stop()  # leaves the Default look on every device

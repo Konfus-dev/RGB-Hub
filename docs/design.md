@@ -30,14 +30,14 @@ using it, see the [README](../README.md).
 ## Layers
 
 ```
- front ends                 platforms             core                      devices / backends
+ front ends                 platforms             core                      devices
  (what you touch)           (one per system)      (the behaviour)           (hardware)
 
  GNOME Shell extension --+
-                         +-> gnome.py -----+
-                                           +--> Hub --> OmenPc ---------> LcdStreamer -> hidraw.py   -> cooler LCD
- Batocera service switch +                 |     |        |------------> Lights ------> openrgb.py  -> case lights
- and game hook ----------+-> batocera.py --+     |        |                        \---> tracer.py   -> case lights
+                         +-> gnome/ -------+
+                                           +--> Hub --> OmenPc ---------> LcdStreamer -> platforms/linux/hidraw.py -> cooler LCD
+ Batocera service switch +                 |     |        |------------> Lights ------> platforms/linux/openrgb.py -> case lights
+ and game hook ----------+-> batocera/ -----+     |        |                        \---> tracer.py   -> case lights
                                                  |        \------------> RamLights ---> platforms/linux/ram.py -> BIOS -> RAM
                                                  \----> IqunixKeyboard -> Lights ------> via.py      -> keyboard
 ```
@@ -54,12 +54,12 @@ using it, see the [README](../README.md).
   `omen_pc.py` (LCD, case lights, RAM) and `iqunix_keyboard.py`. A device
   reads settings only through the hub (`hub.get`), which is what lets the
   hub show the Default look on the way out.
-- **backends** (`service/rgbhub/backends/`) each reach one kind of
-  hardware one way.
 - **platforms** (`service/rgbhub/platforms/`) are the only place that
-  knows about a particular system. Each has a `main()` that picks backends,
-  a settings store, timers, and a source for "what is in focus", and builds
-  the `Hub` and its devices from them.
+  knows about a particular system, one folder each (`gnome/`, `batocera/`),
+  plus `linux/` for the code both share (USB devices, RAM writes, OpenRGB,
+  the GLib event loop). Each system has a `main()` that picks the platform
+  code to use, a settings store, timers, and a source for "what is in
+  focus", and builds the `Hub` and its devices from them.
 - **front ends** (`frontends/`) never touch hardware. A front end writes
   the settings listed in `core/settings_schema.py` and reads the `status`
   report; that list is the whole contract.
@@ -67,17 +67,17 @@ using it, see the [README](../README.md).
 | | GNOME desktop | Batocera |
 |---|---|---|
 | Front end | Shell extension: menu button and settings window | Service switch, game hook, a JSON file |
-| Settings store | GSettings (`gsettings_store.py`) | JSON file (`json_store.py`) |
-| Case lights | OpenRGB server (`openrgb.py`) | own driver (`tracer.py`) |
+| Settings store | GSettings (`gnome/gsettings_store.py`) | JSON file (`core/json_store.py`) |
+| Case lights | OpenRGB server (`linux/openrgb.py`) | own driver (`tracer.py`) |
 | RAM lights | root helper over a socket | in-process (the service is root), if `acpi_call` exists |
 | In focus | the focused app; its icon from the icon theme | the running game; its scraped artwork |
-| Idle look (nothing in focus) | the wallpaper and its main colour (`gnome_theme.py`) | the menu theme's background (`batocera_theme.py`) |
+| Idle look (nothing in focus) | the wallpaper and its main colour (`gnome/gnome_theme.py`) | the menu theme's background (`batocera/theme.py`) |
 | LCD override folder (`core/lcd_folder.py`) | `~/.config/rgbhub/lcd/` | `rgb-hub/` in the active theme |
 | Sleep/wake | systemd-logind | Batocera's suspend/resume hooks |
-| Timers, file watching | GLib (`glib_runtime.py`) | GLib |
+| Timers, file watching | GLib (`linux/glib_runtime.py`) | GLib |
 
 A bug in a front end cannot stall hardware handling, and a new system does
-not touch the core: it is one more file in `platforms/`.
+not touch the core: it is one more folder in `platforms/`.
 
 On the GNOME desktop the parts run as: the extension inside GNOME Shell,
 the service and an OpenRGB server as systemd user units, and the RAM helper
@@ -113,7 +113,7 @@ three front fans have lights, so the other three are hidden
 (`devices/omen_pc/model.py` (`HIDDEN_ZONES`)).
 
 OpenRGB runs with its own configuration folder in which every detector
-except that one is switched off (`backends/openrgb.py`). Its normal RAM
+except that one is switched off (`platforms/linux/openrgb.py`). Its normal RAM
 probing is what jams the RAM bus.
 
 Plain colours and breathing are not left to the board. The service puts it
@@ -167,7 +167,7 @@ cannot fade smoothly at that speed; it switches in one step.
 
 Optional. The extension writes the focused app's id (for example
 `firefox.desktop`) to the `focused-app` setting, and only while auto mode is
-on. Everything else happens in the service (`core/look.py`, with the icon lookup in `platforms/gtk_icons.py`): it finds the
+on. Everything else happens in the service (`core/look.py`, with the icon lookup in `platforms/gnome/gtk_icons.py`): it finds the
 app's icon in the current icon theme, picks the icon's most striking colour
 (grouping pixels by hue, ignoring greys, then making the winner vivid enough
 for LEDs), and builds an LCD picture of the icon on black. That colour

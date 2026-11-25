@@ -22,21 +22,22 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from ..backends import openrgb
-from ..core.hub import Hub
-from ..core.lcd_folder import load_lcd_folder
-from ..core.lights import Lights
-from ..core.look import Looks, cover_lcd
-from ..devices.iqunix_keyboard import IqunixKeyboard, mg65, via
-from ..devices.omen_pc import OmenPc
-from ..devices.omen_pc import model as omen_model
-from ..devices.omen_pc.lcd_fade import fade_frames
-from ..devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
-from ..devices.omen_pc.ram import RamLights
-from . import glib_runtime, gnome_migrate, gnome_theme, gtk_icons, logind
+from ...core.hub import Hub
+from ...core.lcd_folder import load_lcd_folder
+from ...core.lights import Lights
+from ...core.look import Looks, cover_lcd
+from ...devices.iqunix_keyboard import IqunixKeyboard, mg65, via
+from ...devices.omen_pc import OmenPc
+from ...devices.omen_pc import model as omen_model
+from ...devices.omen_pc.lcd_fade import fade_frames
+from ...devices.omen_pc.lcd_streamer import LcdStreamer, lcd_opener
+from ...devices.omen_pc.ram import RamLights
+from ..linux import openrgb
+from ..linux.glib_runtime import GLibRuntime
+from ..linux.hidraw import HidrawBus
+from ..linux.ram import HelperRamBus
+from . import gnome_migrate, gnome_theme, gtk_icons, logind
 from .gsettings_store import GSettingsStore, load_settings
-from .linux.hidraw import HidrawBus
-from .linux.ram import HelperRamBus
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s", error)
         return 1
 
+    runtime = GLibRuntime()
     theme = gnome_theme.DesktopTheme()
     looks = make_looks(theme, args.lcd_folder)
     bus = HidrawBus()
@@ -135,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 display_names=omen_model.DISPLAY_NAMES,
                 fade=fade_frames,
-                watch_file=glib_runtime.watch_file,
+                watch_file=runtime.watch_file,
             ),
             IqunixKeyboard(
                 Lights(via.opener(mg65.MG65, bus), name="Keyboard lights"),
@@ -143,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         ],
         looks=looks,
-        scheduler=glib_runtime.GLibScheduler(),
+        scheduler=runtime,
         focus_report_wait_s=FOCUS_REPORT_WAIT_S,
         focus_report_hint=FOCUS_REPORT_HINT,
     )
@@ -154,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     # refers to the connection any more.
     sleep_watch = logind.watch_for_sleep(hub.on_sleep, hub.on_resume)
     log.info("RGB-Hub running (GNOME)")
-    glib_runtime.run_until_stopped()
+    runtime.run_until_stopped()
     del sleep_watch
     hub.stop()  # leaves the Default look on every device
     return 0

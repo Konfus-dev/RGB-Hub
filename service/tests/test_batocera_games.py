@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from rgbhub.platforms.batocera_games import find_artwork
+from rgbhub.platforms.batocera.games import find_artwork
 
 GAMELIST = """<?xml version="1.0"?>
 <gameList>

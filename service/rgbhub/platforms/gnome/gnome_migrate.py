@@ -15,7 +15,7 @@ from pathlib import Path
 
 from gi.repository import GLib
 
-from ..core.settings_schema import DEFAULT_KEYS, DEFAULTS, migrate
+from ...core.settings_schema import DEFAULT_KEYS, DEFAULTS, migrate
 
 log = logging.getLogger(__name__)
 

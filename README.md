@@ -153,22 +153,21 @@ The code is meant to be easy to change and to extend to other systems.
 |---|---|
 | `service/rgbhub/core/` | The hub (`hub.py`) and what lights and the LCD should do. No operating-system or hardware-library imports. `device.py` is what a device must offer, `interfaces.py` what else the core needs handed in; `settings_schema.py` lists every setting. |
 | `service/rgbhub/devices/` | One folder per device (`omen_pc/`, `iqunix_keyboard/`) with its protocol code and model facts: zone and effect names, hidden zones, colour correction. |
-| `service/rgbhub/backends/` | One file per way of reaching hardware: `openrgb.py` (case lights). |
-| `service/rgbhub/platforms/` | One file per system (plus `linux/`: `hidraw.py` for USB devices and `ram.py` for RAM writes) (`gnome.py`, `batocera.py`) that picks backends and wires in that system's settings storage, timers and "what is in focus". |
+| `service/rgbhub/platforms/` | One folder per system (`gnome/`, `batocera/`) that picks platform code and wires in that system's settings storage, timers and "what is in focus"; `linux/` holds what both share: `hidraw.py` (USB devices), `ram.py` (RAM writes), `openrgb.py` (case lights), `glib_runtime.py` (event loop). |
 | `frontends/` | What you see and touch: the GNOME Shell extension, the Batocera service switch and game hook. A front end only reads and writes settings. |
 | `helper/` | The small root helper for RAM lights on desktop Linux. |
 | `install/`, `systemd/` | Set-up scripts and service definitions. |
 
 **Adding a device**: write `devices/<name>.py` with the calls listed in
-`core/device.py` (most of the lights work is `core/light_group.py`), add a
-backend if it needs one, add it to each platform's list and its id to
+`core/device.py` (most of the lights work is `core/light_group.py`), add
+platform code if it needs some, add it to each platform's list and its id to
 `DEVICE_IDS` in `core/settings_schema.py`, and give it a tab in the front
 ends.
 
 **Adding a system** (another distro, Windows): write
-`platforms/<name>.py` with a `main()` that builds a `Hub` and its devices
+`platforms/<name>/` (its `__init__.py`) with a `main()` that builds a `Hub` and its devices
 from the pieces that fit, and list it in `service/rgbhub/__main__.py`. Reuse the
-backends that work there; add one where they do not.
+platform code that works there; add some where it does not.
 
 **Adding a front end**: anything that can write the settings in
 `core/settings_schema.py` and read the `status` report is a front end.

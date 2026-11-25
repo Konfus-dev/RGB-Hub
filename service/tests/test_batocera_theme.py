@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from rgbhub.platforms.batocera_theme import active_theme, theme_background
+from rgbhub.platforms.batocera.theme import active_theme, theme_background
 
 ES_SETTINGS = """<?xml version="1.0"?>
 <config>
@@ -92,7 +92,7 @@ def test_backgrounds_that_depend_on_theme_variables_are_skipped(tmp_path):
 
 
 def test_the_themes_lcd_folder_is_inside_the_active_theme(tmp_path):
-    from rgbhub.platforms.batocera_theme import lcd_folder
+    from rgbhub.platforms.batocera.theme import lcd_folder
 
     settings, themes = make(tmp_path)
     assert lcd_folder(settings, themes) == tmp_path / "themes" / "classic-dash" / "rgb-hub"

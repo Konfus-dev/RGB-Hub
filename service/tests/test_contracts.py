@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from contracts import check_hid_bus
+from contracts import check_hid_bus, check_runtime
 
 from rgbhub.core.interfaces import FakeHidBus, FakeHidPort, HidMatch, HidPort
 
@@ -45,3 +45,9 @@ def test_ram_buses_fit():
     assert fake.sticks() == [0xC2, 0xC6]
     fake.send([(0xC2, 0x20, 1)])
     assert fake.batches == [[(0xC2, 0x20, 1)]]
+
+
+def test_glib_runtime_contract():
+    from rgbhub.platforms.linux.glib_runtime import GLibRuntime
+
+    check_runtime(GLibRuntime)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import pytest
 
-from rgbhub.platforms.gsettings_store import load_settings
+from rgbhub.platforms.gnome.gsettings_store import load_settings
 
 
 def test_defaults(settings):
@@ -24,7 +24,7 @@ def test_missing_compiled_schema(tmp_path):
 
 
 def test_store_reads_and_writes_plain_python_values(settings):
-    from rgbhub.platforms.gsettings_store import GSettingsStore
+    from rgbhub.platforms.gnome.gsettings_store import GSettingsStore
 
     store = GSettingsStore(settings)
     assert store.get("device-enabled") == {} and store.get("zone-colours") == {}
@@ -43,7 +43,7 @@ def test_store_reads_and_writes_plain_python_values(settings):
 def test_store_reports_changes_until_unsubscribed(settings):
     from gi.repository import GLib
 
-    from rgbhub.platforms.gsettings_store import GSettingsStore
+    from rgbhub.platforms.gnome.gsettings_store import GSettingsStore
 
     store, seen = GSettingsStore(settings), []
     store.subscribe(seen.append)
