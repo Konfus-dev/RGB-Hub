@@ -1,10 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 <#
-RGB-Hub: finish the install made from Ubuntu (install-windows.sh). Runs with
-admin rights, once, at the owner's first sign-in afterwards (RGB-Hub-setup.cmd
-in the Startup folder asks for them):
+RGB-Hub: finish the install. Runs with admin rights, once:
 
     finish-setup.ps1 -User <folder name under C:\Users>
+        after the install made from Ubuntu (install-windows.sh), at the owner's
+        first sign-in afterwards (RGB-Hub-setup.cmd in the Startup folder asks
+        for admin rights)
+    finish-setup.ps1 -User <name> -FirstInstall -From <version folder>
+        after the install made from Windows (install.ps1, which asks for admin
+        rights): first puts C:\Program Files\RGB-Hub in place, made in
+        Program Files (so with its permissions): a copy of the owner's Python
+        (install.ps1 checked python.org's download), this script's
+        verify_update.py, and then the RAM helper and setup scripts as for an
+        approved update (GitHub's copies, checked by verify_update.py); then
+        everything below
 
 - C:\Program Files\RGB-Hub gets the permissions Windows gives Program Files
   (install-windows.sh already made it admin-only); the owner's own folders get
@@ -39,6 +48,7 @@ Written for Windows PowerShell 5.1 (part of Windows 11); ASCII only.
 param(
     [Parameter(Mandatory = $true)][string]$User,
     [switch]$HelperOnly,
+    [switch]$FirstInstall,
     [string]$From
 )
 
@@ -244,13 +254,44 @@ function Disable-HpServices {
     }
 }
 
-function Install-Approved([string]$Version) {
-    # Only an RGB-Hub version folder of this owner; only what GitHub confirms.
+function Get-VersionFolder([string]$Version) {
+    # Only an RGB-Hub version folder of this owner.
     $full = [IO.Path]::GetFullPath($Version)
     if (($full -notmatch '^(.+)\\versions\\([0-9a-f]{40})$') -or ($Matches[1] -ne $AppRoot)) {
         throw "Not an RGB-Hub version folder: $Version"
     }
-    $commit = $Matches[2]
+    return $full
+}
+
+function Install-First([string]$Version) {
+    # C:\Program Files\RGB-Hub made here, so it has Program Files' permissions
+    # (administrators write, users read and run): Python and the update checker.
+    $full = Get-VersionFolder $Version
+    $python = Join-Path $AppRoot 'python'
+    Assert-NoReparse $AppRoot
+    Assert-NoReparse $python -Tree
+    Assert-NoReparse $full -Tree
+    if (-not (Test-Path -LiteralPath "$python\python.exe")) { throw "There is no Python in $python." }
+    Assert-NoReparse $Program -Tree
+    # A repair: the RAM helper runs from the Python being replaced.
+    Stop-ScheduledTask -TaskName 'RGB-Hub RAM' -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path "$Program\install\windows" | Out-Null
+    foreach ($leftover in @("$Program\python.new", "$Program\python.old")) {
+        if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force }
+    }
+    Copy-Item -Recurse -LiteralPath $python -Destination "$Program\python.new"
+    if (Test-Path -LiteralPath "$Program\python") { Rename-Item -LiteralPath "$Program\python" -NewName 'python.old' }
+    Rename-Item -LiteralPath "$Program\python.new" -NewName 'python'
+    if (Test-Path -LiteralPath "$Program\python.old") { Remove-Item -LiteralPath "$Program\python.old" -Recurse -Force }
+    # The checker that runs next checks itself with GitHub too, with the rest.
+    Copy-Item -Force -LiteralPath "$full\install\windows\verify_update.py" -Destination "$Program\install\windows\verify_update.py"
+    Say "Put Python and the update checker into $Program"
+}
+
+function Install-Approved([string]$Version) {
+    # Only an RGB-Hub version folder of this owner; only what GitHub confirms.
+    $full = Get-VersionFolder $Version
+    $commit = Split-Path -Leaf $full
     Assert-NoReparse $AppRoot
     Assert-NoReparse $full -Tree
     if (Test-Path -LiteralPath $Staging) { Remove-Item -LiteralPath $Staging -Recurse -Force }
@@ -287,7 +328,13 @@ try {
     New-Item -ItemType Directory -Force -Path $Data | Out-Null
     Assert-NoReparse $Data
     $Owner = Find-Owner
-    Say "RGB-Hub setup for $($Owner.Account) (HelperOnly: $HelperOnly)"
+    Say "RGB-Hub setup for $($Owner.Account) (HelperOnly: $HelperOnly, FirstInstall: $FirstInstall)"
+
+    if ($FirstInstall) {
+        if (-not $From) { throw '-FirstInstall needs -From <version folder>.' }
+        Install-First $From
+        Install-Approved $From
+    }
 
     if ($HelperOnly) {
         if ($From) {
@@ -322,7 +369,11 @@ try {
     exit 0
 } catch {
     Say "Setup stopped: $_"
-    Write-Host 'RGB-Hub setup did not finish; it will try again at the next sign-in.'
+    if ($FirstInstall) {
+        Write-Host 'RGB-Hub setup did not finish; run install.ps1 again to finish it.'
+    } else {
+        Write-Host 'RGB-Hub setup did not finish; it will try again at the next sign-in.'
+    }
     Write-Host "Details are in $Log"
     Read-Host 'Press Enter to close' | Out-Null
     exit 1

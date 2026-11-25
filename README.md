@@ -180,7 +180,49 @@ Settings are a small JSON file; see
 ## Windows
 
 RGB-Hub replaces HP's OMEN Gaming Hub on the OMEN's Windows 11. It is
-installed from Ubuntu, onto the Windows partition. First shut Windows down
+installed from Windows itself. The easiest way is
+[OS-Configs-And-Tools](https://github.com/Konfus-dev/OS-Configs-And-Tools):
+its Windows setup has an `rgbhub` step that does the steps below by itself
+(only on a PC with the OMEN cooler, the OMEN case lights or the IQUNIX
+keyboard).
+
+By hand: download RGB-Hub's `main` branch
+(<https://github.com/Konfus-dev/RGB-Hub/archive/refs/heads/main.zip>),
+unzip it, open PowerShell in the unzipped folder (as yourself, not as
+administrator) and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install\windows\install.ps1
+```
+
+It downloads Windows' Python and pip (pinned versions, checksums checked) and
+the newest `main` from GitHub, with the Windows libraries, into
+`%LOCALAPPDATA%\Programs\RGB-Hub`. Then **Windows asks once for
+administrator rights (UAC)**. After you accept, setup finishes by itself:
+
+- it puts Python, the small RAM helper and the setup scripts into
+  `C:\Program Files\RGB-Hub` (only administrators can change them there; the
+  helper and scripts are checked against GitHub first);
+- it registers three scheduled tasks that start at every sign-in (the hub,
+  the updater, and the RAM helper, which is the only part with full rights),
+  and starts them;
+- it **uninstalls OMEN Gaming Hub** (also for new accounts) and **switches
+  off HP's OMEN and analytics services** (`HPOmenCap`,
+  `HPOmenCustomCapDriver`, `HpTouchpointAnalyticsService`,
+  `hp-one-agent-service`). Their old settings are written down so the
+  uninstall can put them back. The Hub app itself can be installed again
+  from the Microsoft Store.
+
+Settings start as the defaults (an existing `%APPDATA%\rgbhub\settings.json`
+is kept). Run it again when RGB-Hub is installed and it only says so; add
+`-Repair` to install everything again (quit RGB-Hub from its tray icon
+first). If you said No to the administrator prompt, run it again to finish.
+Inside a virtual machine it does nothing.
+
+### From Ubuntu (old way)
+
+It can also be installed from Ubuntu, onto the Windows partition, which also
+copies your Ubuntu settings and pictures. First shut Windows down
 completely (not hibernate, and Fast Startup off; the script checks and
 refuses otherwise), boot Ubuntu, and run:
 
@@ -194,8 +236,7 @@ pkexec /usr/bin/bash /home/konfus/Source/RGB-Hub/install/install-windows.sh --us
 > `system.ntfs_security` setting the script uses to lock the folder down
 > (reading it back gave "No such file or directory" even on existing
 > folders). The script stops on purpose before copying anything, and leaves
-> Windows read-only and unchanged, so the Windows install does not complete
-> on this kernel until that step is changed.
+> Windows read-only and unchanged. Install from Windows instead (above).
 
 (`--user` is the Windows account's folder name under `C:\Users`;
 `--windows-mount` says where Ubuntu mounts Windows, `/mnt/windows` by
@@ -206,17 +247,9 @@ libraries. The Windows partition is writable only while it copies. You can
 run it again as a repair.
 
 Then boot Windows. At the next sign-in **one administrator prompt (UAC)**
-appears. After you accept it, setup finishes by itself:
+appears; after you accept it, setup finishes as described above.
 
-- it registers three scheduled tasks that start at every sign-in (the hub,
-  the updater, and the small RAM helper, which is the only part with full
-  rights);
-- it **uninstalls OMEN Gaming Hub** (also for new accounts) and **switches
-  off HP's OMEN and analytics services** (`HPOmenCap`,
-  `HPOmenCustomCapDriver`, `HpTouchpointAnalyticsService`,
-  `hp-one-agent-service`). Their old settings are written down so the
-  uninstall can put them back. The Hub app itself can be installed again
-  from the Microsoft Store.
+### Updates and uninstall
 
 Windows keeps RGB-Hub updated the same way as Ubuntu. What you see and do
 there is in [frontends/windows/README.md](frontends/windows/README.md).

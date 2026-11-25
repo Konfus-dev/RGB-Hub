@@ -5,6 +5,7 @@ Nothing here touches Windows or the real system: the Windows partition, the
 install folders and the hub's runtime.json are temporary folders, programs
 and HTTP requests go to fakes."""
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -603,6 +604,8 @@ def test_windows_scripts_are_ascii():
         "uninstall.ps1",
         "approve-privileged.ps1",
         "RGB-Hub-setup.cmd",
+        "install.ps1",
+        "pins.json",
     } <= names
     for path in SCRIPTS:
         path.read_bytes().decode("ascii")  # Windows PowerShell 5.1 reads files as ANSI
@@ -965,3 +968,195 @@ def test_install_from_ubuntu_ignores_a_lock_left_by_windows(tmp_path):
     assert (root / "current.txt").read_text() == A + "\n"
     assert not (root / "update.lock").exists()
     assert "foreign_lock=True" in (INSTALL / "install-windows.sh").read_text()
+
+
+# ---- the install from Windows (install.ps1) -------------------------------------------
+
+PINS = INSTALL / "windows" / "pins.json"
+INSTALL_PS1 = INSTALL / "windows" / "install.ps1"
+needs_pwsh = pytest.mark.skipif(
+    shutil.which("pwsh") is None, reason="PowerShell (pwsh) is not installed"
+)
+
+
+def pwsh_install(body: str) -> str:
+    """Run `body` in pwsh after dot-sourcing install.ps1 (only its functions run then)."""
+    command = f". '{INSTALL_PS1}'; {body}"
+    done = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    return done.stdout.strip()
+
+
+def test_pins_are_in_one_file():
+    pins = json.loads(PINS.read_text(encoding="ascii"))
+    python, pip = pins["python"], pins["pip"]
+    version = python["version"]
+    assert python["url"] == (
+        f"https://www.python.org/ftp/python/{version}/python-{version}-embed-amd64.zip"
+    )
+    major, minor = version.split(".")[:2]
+    assert python["pth"] == f"python{major}{minor}._pth"
+    assert pip["url"].startswith("https://files.pythonhosted.org/")
+    assert pip["url"].endswith(f"/pip-{pip['version']}-py3-none-any.whl")
+    for part in (python, pip):
+        assert re.fullmatch(r"[0-9a-f]{64}", part["sha256"])
+    # Neither script keeps a checksum of its own.
+    for script in (INSTALL / "install-windows.sh", INSTALL_PS1):
+        text = script.read_text()
+        assert "pins.json" in text, script.name
+        assert not re.search(r"\b[0-9a-f]{64}\b", text), script.name
+        assert version not in text, script.name
+
+
+def test_install_windows_sh_reads_the_pins():
+    text = (INSTALL / "install-windows.sh").read_text()
+    block = text[text.index("# pins: begin") : text.index("# pins: end")]
+    script = (
+        f'pins="{PINS}"\n{block}\n'
+        'printf "%s\\n" "$PY_VERSION" "$PY_URL" "$PY_SHA256" "$PY_PTH" "$PIP_URL" "$PIP_SHA256"\n'
+    )
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    pins = json.loads(PINS.read_text())
+    assert done.stdout.splitlines() == [
+        pins["python"]["version"],
+        pins["python"]["url"],
+        pins["python"]["sha256"],
+        pins["python"]["pth"],
+        pins["pip"]["url"],
+        pins["pip"]["sha256"],
+    ]
+    assert '"$PIP_SHA256  $pip_whl" | sha256sum --check' in text
+    assert '"$PY_SHA256  $cache/$PY_ZIP" | sha256sum --check' in text
+
+
+@needs_pwsh
+def test_install_ps1_reads_the_same_pins(tmp_path):
+    out = pwsh_install(
+        f"$p = Read-Pins '{PINS}'; "
+        "$p.python.version; $p.python.url; $p.python.sha256; $p.python.pth; "
+        "$p.pip.url; $p.pip.sha256"
+    )
+    pins = json.loads(PINS.read_text())
+    assert out.splitlines() == [
+        pins["python"]["version"],
+        pins["python"]["url"],
+        pins["python"]["sha256"],
+        pins["python"]["pth"],
+        pins["pip"]["url"],
+        pins["pip"]["sha256"],
+    ]
+    odd = json.loads(PINS.read_text())
+    odd["pip"]["sha256"] = "x" * 64
+    (tmp_path / "pins.json").write_text(json.dumps(odd))
+    assert (
+        pwsh_install(
+            f"try {{ Read-Pins '{tmp_path / 'pins.json'}' | Out-Null; 'read' }} "
+            "catch { 'refused' }"
+        )
+        == "refused"
+    )
+
+
+@needs_pwsh
+def test_install_ps1_checksum_and_import_site(tmp_path):
+    data = tmp_path / "file.zip"
+    data.write_bytes(b"python")
+    good = hashlib.sha256(b"python").hexdigest()
+    assert pwsh_install(
+        f"Test-Checksum '{data}' '{good}'; Test-Checksum '{data}' '{'0' * 64}'"
+    ).splitlines() == ["True", "False"]
+    out = pwsh_install(
+        'Enable-ImportSite "python313.zip`r`n.`r`n`r`n#import site`r`n"; '
+        "try { Enable-ImportSite \"python313.zip`r`n\" } catch { 'refused' }"
+    )
+    assert out.splitlines() == ["python313.zip", ".", "", "import site", "", "refused"]
+
+
+@needs_pwsh
+def test_install_ps1_stays_out_of_virtual_machines_and_other_accounts():
+    out = pwsh_install(
+        "Test-VirtualMachine 'QEMU Standard PC (Q35 + ICH9, 2009)'; "
+        "Test-VirtualMachine 'Microsoft Corporation Virtual Machine'; "
+        "Test-VirtualMachine 'HP OMEN 45L Gaming Desktop GT22-1xxx'; "
+        "Test-OtherAccount $false 'PC\\admin' 'PC\\jercl'; "
+        "Test-OtherAccount $true 'PC\\jercl' 'pc\\JERCL'; "
+        "Test-OtherAccount $true 'PC\\admin' 'PC\\jercl'; "
+        "Test-OtherAccount $true 'PC\\admin' ''"
+    )
+    assert out.splitlines() == ["True", "True", "False", "False", "False", "True", "True"]
+
+
+@needs_pwsh
+def test_install_ps1_knows_what_is_installed_and_what_to_do(tmp_path):
+    root = tmp_path / "RGB-Hub"
+
+    def state(tasks: bool) -> list[str]:
+        flag = "$true" if tasks else "$false"
+        out = pwsh_install(f"$s = Get-InstallState '{root}' {flag}; $s.State; [string]$s.Version")
+        return (out.splitlines() + [""])[:2]
+
+    assert state(True) == ["new", ""]  # nothing there (tasks alone do not count)
+    root.mkdir()
+    (root / "current.txt").write_text("not a commit\n")
+    assert state(True) == ["new", ""]
+    (root / "current.txt").write_text(A + "\n")
+    assert state(True) == ["new", ""]  # names a version that is not there
+    finish = root / "versions" / A / "install" / "windows" / "finish-setup.ps1"
+    finish.parent.mkdir(parents=True)
+    finish.write_text("#")
+    # (pwsh on Linux joins with "\", which is fine on Windows; compare the name only)
+    assert state(False)[0] == "unfinished" and state(False)[1].endswith(A)
+    assert state(True)[0] == "installed"
+
+    def steps(state: str, repair: bool) -> str:
+        flag = "$true" if repair else "$false"
+        return pwsh_install(f"(Get-Steps '{state}' {flag}) -join ','")
+
+    assert steps("new", False) == "python,version,setup"
+    assert steps("unfinished", False) == "setup"
+    assert steps("installed", False) == ""
+    for state_ in ("new", "unfinished", "installed"):
+        assert steps(state_, True) == "python,version,setup"
+
+
+def test_install_ps1_installs_with_the_updaters_own_code():
+    text = INSTALL_PS1.read_text()
+    # The same boot line as install-user.sh / install-batocera.sh.
+    boot = (
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "from rgbhub.updater.install import main; sys.exit(main(sys.argv[1:]))"
+    )
+    assert boot in text and boot in (INSTALL / "install-batocera.sh").read_text()
+    assert "--platform windows --from-github --root $Root" in text
+    assert "service\\rgbhub\\platforms\\windows\\launcher.py" in text
+    assert "'pip.whl'" in text
+    # One admin prompt, for that version's finish-setup.ps1 in its first-install mode.
+    assert text.count("-Verb RunAs") == 1
+    assert "-FirstInstall -From" in text and "install\\windows\\finish-setup.ps1" in text
+    # Never the settings; an existing settings.json stays as it is.
+    assert "settings.json" not in text.replace("an existing %APPDATA%\\rgbhub\\settings.json", "")
+    assert "'qemu|virtual'" in text
+    for name in ("'RGB-Hub'", "'RGB-Hub update'", "'RGB-Hub RAM'"):
+        assert name in text
+
+
+def test_finish_setup_first_install_puts_program_files_in_place_then_checks_with_github():
+    text = (INSTALL / "windows" / "finish-setup.ps1").read_text()
+    assert "[switch]$FirstInstall" in text
+    body = text[text.index("function Install-First") :]
+    body = body[: body.index("\n}\n")]
+    assert "Get-VersionFolder $Version" in body
+    assert "Assert-NoReparse $python -Tree" in body and "Assert-NoReparse $full -Tree" in body
+    assert "verify_update.py" in body
+    assert "Stop-ScheduledTask -TaskName 'RGB-Hub RAM'" in body
+    # In the main part: Program Files first, then GitHub's admin parts, then the usual setup.
+    main = text[text.index("if ($FirstInstall) {\n        if (-not $From)") :]
+    assert main.index("Install-First $From") < main.index("Install-Approved $From")
+    assert main.index("Install-Approved $From") < main.index("Reset-ProgramFolder\n")
+    assert main.index("Reset-ProgramFolder\n") < main.index("Register-Tasks $Owner")

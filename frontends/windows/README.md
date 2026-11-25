@@ -2,8 +2,12 @@
 
 RGB Hub replaces HP's OMEN Gaming Hub on Windows. It drives two devices,
 each of which can follow the app you are using or not: **OMEN-PC** (cooler
-LCD, case lights, RAM) and **IQUNIX-KEYBOARD**. How it is installed, from
-Ubuntu, is in the [main README](../../README.md#windows).
+LCD, case lights, RAM) and **IQUNIX-KEYBOARD**. It is installed from
+Windows: in a downloaded copy of RGB-Hub's `main`, run
+`powershell -ExecutionPolicy Bypass -File install\windows\install.ps1` as
+yourself (Windows asks once for administrator rights), or let
+OS-Configs-And-Tools' `rgbhub` step do it. Details are in the
+[main README](../../README.md#windows).
 
 ## What you see
 
@@ -58,8 +62,9 @@ The LCD and lights go dark when the PC sleeps and come back when it wakes.
 | The program (one folder per version) | `%LOCALAPPDATA%\Programs\RGB-Hub\versions\` |
 | The RAM helper and setup scripts (administrators only) | `C:\Program Files\RGB-Hub\` |
 
-If something does not work, start with `hub.log`. Settings are copied from
-Ubuntu once, at install; after that Windows and Ubuntu each keep their own.
+If something does not work, start with `hub.log`. Settings start as the
+defaults (the install from Ubuntu copies Ubuntu's once); after that Windows
+and Ubuntu each keep their own.
 
 ## Updates
 

@@ -50,12 +50,21 @@ die() {
     exit 1
 }
 
-# Windows' embeddable Python. The checksum is the one python.org lists for this file.
-PY_VERSION=3.13.17
-PY_ZIP="python-$PY_VERSION-embed-amd64.zip"
-PY_URL="https://www.python.org/ftp/python/$PY_VERSION/$PY_ZIP"
-PY_SHA256=9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38
-PY_PTH=python313._pth
+# Windows' embeddable Python and pip, pinned in install/windows/pins.json (which
+# install/windows/install.ps1 reads too). The checksums are the ones python.org
+# and PyPI list for these files.
+pins="$(dirname "${BASH_SOURCE[0]}")/windows/pins.json"
+# pins: begin
+PY_VERSION= PY_URL= PY_SHA256= PY_PTH= PIP_URL= PIP_SHA256=
+read -r PY_VERSION PY_URL PY_SHA256 PY_PTH PIP_URL PIP_SHA256 < <(python3 -I -c '
+import json, sys
+p = json.load(open(sys.argv[1], encoding="ascii"))
+print(*(p[a][b] for a, b in (("python", "version"), ("python", "url"), ("python", "sha256"),
+      ("python", "pth"), ("pip", "url"), ("pip", "sha256"))))
+' "$pins") || true
+# pins: end
+[[ $PY_SHA256 =~ ^[0-9a-f]{64}$ && $PIP_SHA256 =~ ^[0-9a-f]{64}$ ]] || die "cannot read $pins"
+PY_ZIP="${PY_URL##*/}"
 MIN_FREE_KB=$((400 * 1024))
 
 if [[ $EUID -ne 0 ]]; then
@@ -222,11 +231,19 @@ print("\n".join(windows_requirements(Path(sys.argv[1]))))
 as_owner python3 -m venv "$tmp/venv" || die "could not make a Python environment (install python3-venv)"
 as_owner env PIP_CACHE_DIR="$cache/pip" "$tmp/venv/bin/pip" download --quiet \
     --disable-pip-version-check --only-binary=:all: --platform win_amd64 \
-    --python-version 3.13 --implementation cp -d "$tmp/wheels" "${requirements[@]}" pip ||
+    --python-version 3.13 --implementation cp -d "$tmp/wheels" "${requirements[@]}" ||
     die "could not download the Windows libraries"
-pip_wheels=("$tmp"/wheels/pip-*.whl)
-[[ ${#pip_wheels[@]} -eq 1 && -f ${pip_wheels[0]} ]] || die "no pip wheel was downloaded"
-as_owner mv "${pip_wheels[0]}" "$tmp/pip.whl"
+pip_whl="$cache/${PIP_URL##*/}"
+if [[ ! -f $pip_whl ]]; then
+    as_owner curl -fsSL --proto '=https' -o "$pip_whl.part" "$PIP_URL" ||
+        die "could not download $PIP_URL"
+    as_owner mv "$pip_whl.part" "$pip_whl"
+fi
+if ! echo "$PIP_SHA256  $pip_whl" | sha256sum --check --quiet --status; then
+    rm -f "$pip_whl"
+    die "${pip_whl##*/} is not the file PyPI published (checksum differs); it was deleted, run this again"
+fi
+as_owner cp "$pip_whl" "$tmp/pip.whl"
 
 # The RAM sticks Ubuntu sees, for the helper to fall back on.
 sticks="$(as_owner python3 -I -c '
