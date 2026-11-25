@@ -198,7 +198,10 @@ which is factored so the transport (acpi_call vs WMI) is a parameter.
    Fast Startup off, hive sequence numbers equal — the same checks bt-share
    uses) and the WinBridge VM is not running (`/dev/mapper/winbridge`).
 2. Remount `/mnt/windows` rw briefly; restore ro at the end, also on failure.
-3. Copy to `C:\Program Files\RGB-Hub\`: Windows embeddable Python
+3. Copy the RAM helper (and the Python it runs on) to
+   `C:\Program Files\RGB-Hub\`, admin-writable only. Copy the hub to
+   `%LOCALAPPDATA%\Programs\RGB-Hub\versions\<commit>\` (user-writable, so
+   the updater needs no elevation): Windows embeddable Python
    (pinned version, checksum-verified), wheels unpacked for `win_amd64`
    (`pip download --only-binary=:all: --platform win_amd64`: Pillow,
    hidapi, pystray), the `rgbhub` package, the helper, the web page,
@@ -214,8 +217,8 @@ At the next Windows sign-in, `RGB-Hub setup.cmd` asks once for elevation
 
 - resets the install folder's ACLs to inherit Program Files' (files written
   from Linux carry ntfs3 defaults);
-- registers the two scheduled tasks (hub at sign-in as the user; RAM helper
-  at sign-in, highest privileges);
+- registers the scheduled tasks: hub and updater at sign-in as the user;
+  RAM helper at sign-in, highest privileges;
 - uninstalls OMEN Gaming Hub (`Get-AppxPackage AD2F1837.OMENCommandCenter
   | Remove-AppxPackage`, plus the provisioned package so it does not come
   back for new users) and disables `HPOmenCap`, `HPOmenCustomCapDriver` and
@@ -229,13 +232,11 @@ At the next Windows sign-in, `RGB-Hub setup.cmd` asks once for elevation
 `uninstall.ps1` removes the tasks and folder and re-enables whatever
 setup disabled.
 
-**Updates** (builder's call): re-run `install-windows.sh` from Ubuntu. It
-replaces the program files and drops `RGB-Hub setup.cmd` again, so each
-update costs one UAC prompt at the next sign-in (for the ACL reset and
-task refresh). Updates are rare, so this is simpler than a staging
-scheme. Step 4 only *seeds* settings and pictures when they are missing;
-it never overwrites what the owner changed on Windows. Writing to Windows
-makes WinBridge start fresh (new iCloud pairing code), as bt-share's writes
+**Updates**: after the first install, Windows updates itself (section 9).
+`install-windows.sh` is for the first install (or a repair); re-running it
+only *seeds* settings and pictures when they are missing and never
+overwrites what the owner changed on Windows. Writing to Windows makes
+WinBridge start fresh (new iCloud pairing code), as bt-share's writes
 already do; accepted.
 
 **WinBridge VM** (builder's call): WinBridge boots this same Windows as a
@@ -252,6 +253,105 @@ identical matches to today's prefixes), `ram_bios.py` exposes its two
 paths as `RamBus` classes, platforms pass the bus/runtime in. Behaviour
 identical; all existing tests pass (adjusted only for the new
 constructor arguments).
+
+### 7. Package layout (no "backends")
+
+The owner asked that the word "backends" go: OS-specific code is
+*platform* code, and protocol code belongs to the device it talks to.
+
+```
+rgbhub/
+  core/                 hub, auto mode, looks, settings schema, and the interfaces
+                        (HidBus, HidPort, RamBus, Runtime, Settings, Scheduler, Device)
+  devices/
+    __init__.py         DEVICES = (omen_pc, iqunix_keyboard): the one list
+    omen_pc/            device.py, lcd (protocol, streamer, fade), case board driver
+                        (tracer.py), RAM registers (ram.py), constants (omen45l.py)
+    iqunix_keyboard/    device.py, via.py, mg65.py
+  platforms/
+    linux/              hidraw HidBus, GLib Runtime, RAM via socket helper / acpi_call,
+                        OpenRGB client + detector lock
+    gnome/              GSettings store, icon theme, wallpaper, logind, main()
+    batocera/           game hook, theme, power hooks, JSON store use, main()
+    windows/            hidapi HidBus, thread Runtime, WMI RamBus client, focus,
+                        icons, wallpaper, tray, web settings server, main()
+  updater/              the self-updater (section 9), stdlib only
+```
+
+Shared, OS-neutral pieces that several platforms use (`json_store.py`,
+`thread_runtime.py`, `lcd_folder.py`, look/icon colour logic) live in
+`core/` or a `platforms/common/` folder; no platform imports another
+platform except `gnome`/`batocera` importing `linux`. `__main__.py` keeps
+`python -m rgbhub` working. Old import paths are not kept (one owner, all
+callers updated together, incl. EmuBox's component and MacWinBuntu).
+
+### 8. Adding a device
+
+Today a new device must be wired into every platform's `main()`,
+`DEVICE_IDS`, `prefs.js`'s `DEVICES` and (now) the web page. Instead:
+
+- Each device package exposes `build(platform) -> Device | None`.
+  `platform` is a small object of what that system offers: `hid_bus`,
+  `ram_bus` (or None), `runtime`, `watch_file`, `case_lights` choice
+  (OpenRGB on GNOME, tracer elsewhere), `lcd_folder`. A device returns None
+  when the system cannot support it.
+- `devices/__init__.py` holds the one list `DEVICES`; every platform does
+  `[d for m in DEVICES if (d := m.build(platform))]`.
+- `DEVICE_IDS` is derived from that list.
+- Each device describes itself in `status`: `id`, `label`, `icon` (a
+  freedesktop symbolic name, mapped for Windows), `has_lcd`. The GNOME
+  window and the web page build their tabs from `status`; prefs.js's
+  hard-coded `DEVICES` goes (kept only as the fallback when status is empty).
+- Result: a new device = one new folder under `devices/` + one line in
+  `DEVICES`. Exception: EmuBox's Batocera menu keeps its fixed list
+  (Batocera reads its menu config only at start; decided 2026-11-19), so it
+  needs a one-line edit there too.
+- A test builds every device in `DEVICES` against a fake platform and
+  checks it fits the `Device` interface and describes itself in status.
+
+### 9. Self-updater (all three systems)
+
+Every system keeps an installed copy that follows `main` of
+`github.com/Konfus-dev/RGB-Hub` (GitHub redirects the old
+`OmenRGB-Controller` name). The owner's working copy
+(`~/Source/RGB-Hub`) is never touched by it.
+
+- **Separate process** (`python -m rgbhub.updater`), stdlib only, so a bad
+  hub version cannot break updating. Runs at start-up, then hourly:
+  systemd user timer (Ubuntu), scheduled task as the user (Windows), the
+  `rgb_hub` service script loop (Batocera).
+- **Check**: GitHub API `commits/main` → SHA. Apply only if it is a
+  descendant of the installed commit (`compare/<installed>...<sha>` says
+  `ahead`). Never goes backwards; GitHub `main` today still holds the old
+  OmenRGB-Controller code until the owner renames and pushes.
+- **Install a version**: download `archive/<sha>.zip` → unpack into
+  `versions/<sha>/` → install its Python dependencies into that folder
+  (Windows: wheels for the embeddable Python; Ubuntu: a venv per version
+  with system site packages; Batocera: none, Pillow is the system's) →
+  `python -m rgbhub --self-check` (imports every module the platform uses,
+  builds the hub against fakes) → switch `current` (symlink on Linux, a
+  `current.txt` the launcher reads on Windows) → restart the hub.
+  Keep the previous two versions; delete older ones.
+- **When**: at once on Ubuntu/Windows (a brief Default-look flash); on
+  Batocera only when no game is running (`focused-app` empty).
+- **Rollback**: if the restarted hub exits or crashes within 60 s, switch
+  back to the previous version and record the commit as bad; skip it until
+  `main` moves on. Logged; on Ubuntu/Windows also a desktop notification.
+- **Privileged parts are never updated silently on Ubuntu/Windows.** The
+  updater runs with the owner's normal rights. If a new version changes
+  the RAM helper, udev rules, systemd units or scheduled-task definitions,
+  the rest is applied and the owner gets a notification to approve that
+  part (pkexec prompt on Ubuntu, UAC on Windows), running the platform's
+  privileged install step from that version. Reason: otherwise anyone
+  with push access to the repo would get admin on every machine. On
+  Batocera everything already runs as root, so it updates everything.
+- **Settings are never touched by updates.** The GNOME extension is
+  copied too (takes effect at the next login).
+- **Developing on Ubuntu**: `install/install-user.sh --dev` points the
+  service at the working copy and pauses the updater; `--release` goes back
+  to following `main`. Installs default to `--release`.
+- **EmuBox**: its `rgb-hub` component installs the release layout once;
+  afterwards the updater keeps it current.
 
 ## Testing
 
@@ -282,3 +382,7 @@ constructor arguments).
    analytics services are disabled (see section 5).
 2. **Settings are copied once** from Ubuntu at install. After that each
    system keeps its own; no ongoing sync.
+3. **No "backends"**: OS-specific code lives under `platforms/<system>/`,
+   protocol code with its device (section 7).
+4. **Adding a device must be easy**: one folder + one line (section 8).
+5. **Auto-updater on all three systems**, following `main` (section 9).
