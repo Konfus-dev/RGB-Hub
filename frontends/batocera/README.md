@@ -23,6 +23,19 @@ While it is on:
   Default from EmuBox's menu (Game Settings > RGB HUB), or by hand with
   `"default-action": "save"` in the settings file.
 
+## Where it lives, and updates
+
+The program is installed in `/userdata/system/rgb-hub/`, one folder per
+version in `versions/<commit>/`; `current.txt` names the one that runs. The
+service script starts that version and starts it again if it stops. At start
+and about every hour it looks for a newer `main` on GitHub (a newer one only;
+never an older one) and, when no game is running, installs it beside the
+current one, checks it and switches over. If the new version does not start
+within a minute, the old one comes back. Your `settings.json` is never
+touched. Everything on Batocera runs as root, so an update replaces the
+service script and the game and sleep hooks too, with no approval step.
+What the updater did is in `/userdata/system/logs/rgb-hub.log`.
+
 ## Settings
 
 Edit `settings.json` in this folder (from Batocera it is

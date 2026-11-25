@@ -7,9 +7,9 @@ software. Today that is two devices:
   desktop (case lights, RAM lights, cooler screen).
 - **IQUNIX-KEYBOARD**: an **IQUNIX MG65** keyboard's lights.
 
-It runs on a GNOME desktop (developed on Ubuntu) and on Batocera, and is
-built so that more devices, systems and front ends can be added without
-touching the core. (It was called OmenRGB-Controller until it learned the
+It runs on a GNOME desktop (developed on Ubuntu), on Batocera and on
+Windows, and is built so that more devices, systems and front ends can be
+added without touching the core. (It was called OmenRGB-Controller until it learned the
 keyboard.)
 
 This is an unofficial hobby project, not affiliated with HP. Use it at your
@@ -43,7 +43,11 @@ own risk.
   changes, everything goes dark when the PC sleeps, and the service does
   almost nothing while the lights are steady.
 - **One place:** an "RGB Hub" button next to Wi-Fi and Bluetooth that
-  opens a settings window with an Auto tab and a tab per device.
+  opens a settings window with an Auto tab and a tab per device. On Windows
+  it is an icon in the tray that opens the same kind of window.
+- **Stays up to date:** each installed copy follows `main` on GitHub by
+  itself, only forwards, and goes back to the old version if the new one
+  does not start.
 - Your choices come back by themselves after a reboot.
 
 ## What it does not do (yet)
@@ -67,7 +71,7 @@ own risk.
 OpenRGB lists seven light zones for the case. On the 45L only the front logo
 and the three front fans have lights, so the rest are hidden.
 
-## Install on a GNOME desktop
+## Install on a GNOME desktop (Ubuntu)
 
 ```sh
 git clone https://github.com/Konfus-dev/RGB-Hub.git
@@ -92,6 +96,14 @@ gnome-extensions enable rgbhub@konfus-dev.github.io
 
 The "RGB Hub" button now appears in the top-right menu. Press it to open
 the settings window (or bring it to the front if it is already open).
+
+Two ways to run it:
+
+- **Release** (the default, `bash install/install-user.sh --release`): the
+  installed copy is the newest `main` and the updater keeps it current.
+- **Dev** (`bash install/install-user.sh --dev`): the service runs straight
+  from your working copy and the updater pauses, so after editing the code
+  you only restart the service. `--release` goes back to following `main`.
 
 ### Updates
 
@@ -157,6 +169,50 @@ game runs it shows that game's artwork, and the lights take its colour.
 Settings are a small JSON file; see
 [frontends/batocera/README.md](frontends/batocera/README.md).
 
+## Windows
+
+RGB-Hub replaces HP's OMEN Gaming Hub on the OMEN's Windows 11. It is
+installed from Ubuntu, onto the Windows partition. First shut Windows down
+completely (not hibernate, and Fast Startup off; the script checks and
+refuses otherwise), boot Ubuntu, and run:
+
+```sh
+pkexec /usr/bin/bash /home/konfus/Source/RGB-Hub/install/install-windows.sh --user jercl
+```
+
+(`--user` is the Windows account's folder name under `C:\Users`;
+`--windows-mount` says where Ubuntu mounts Windows, `/mnt/windows` by
+default.) It copies the program, libraries and Python, and your Ubuntu
+settings and pictures (once; settings already on Windows are never
+replaced). It needs the network the first time, to fetch Windows' Python and
+libraries. The Windows partition is writable only while it copies. You can
+run it again as a repair.
+
+Then boot Windows. At the next sign-in **one administrator prompt (UAC)**
+appears. After you accept it, setup finishes by itself:
+
+- it registers three scheduled tasks that start at every sign-in (the hub,
+  the updater, and the small RAM helper, which is the only part with full
+  rights);
+- it **uninstalls OMEN Gaming Hub** (also for new accounts) and **switches
+  off HP's OMEN and analytics services** (`HPOmenCap`,
+  `HPOmenCustomCapDriver`, `HpTouchpointAnalyticsService`,
+  `hp-one-agent-service`). Their old settings are written down so the
+  uninstall can put them back. The Hub app itself can be installed again
+  from the Microsoft Store.
+
+Windows keeps RGB-Hub updated the same way as Ubuntu. What you see and do
+there is in [frontends/windows/README.md](frontends/windows/README.md).
+
+To remove it, open PowerShell as administrator and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\RGB-Hub\install\windows\uninstall.ps1"
+```
+
+Add `-RemoveSettings` to delete your settings too. It removes the tasks and
+folders and sets HP's services back as they were.
+
 ## Choosing what the LCD shows when nothing is in focus
 
 With auto mode on, the LCD normally shows your wallpaper (on Batocera: the
@@ -167,13 +223,15 @@ one folder that overrides this:
 |---|---|
 | GNOME desktop | `~/.config/rgbhub/lcd/` |
 | Batocera | `rgb-hub/` inside the active theme's folder |
+| Windows | `%APPDATA%\rgbhub\lcd\` |
 
 Put **one picture** in it for a still, **one animated file** (GIF, animated
 WebP or PNG) for an animation, or **several LCD-ready JPEG frames**
 (480x480, at most 60,000 bytes each, named in order) for a pre-rendered
 animation; a text file `frame_ms` sets the time per frame. Empty the folder
 to go back to the default. On the desktop, restart the service afterwards:
-`systemctl --user restart rgbhub`.
+`systemctl --user restart rgbhub`. On Windows the folder is looked at
+again every few seconds; no restart is needed.
 
 ## How the code is organised
 
@@ -183,21 +241,29 @@ The code is meant to be easy to change and to extend to other systems.
 |---|---|
 | `service/rgbhub/core/` | The hub (`hub.py`) and what lights and the LCD should do. No operating-system or hardware-library imports. `device.py` is what a device must offer, `interfaces.py` what else the core needs handed in; `settings_schema.py` lists every setting. |
 | `service/rgbhub/devices/` | One folder per device (`omen_pc/`, `iqunix_keyboard/`) with its protocol code and model facts: zone and effect names, hidden zones, colour correction. |
-| `service/rgbhub/platforms/` | One folder per system (`gnome/`, `batocera/`) that picks platform code and wires in that system's settings storage, timers and "what is in focus"; `linux/` holds what both share: `hidraw.py` (USB devices), `ram.py` (RAM writes), `openrgb.py` (case lights), `glib_runtime.py` (event loop). |
-| `frontends/` | What you see and touch: the GNOME Shell extension, the Batocera service switch and game hook. A front end only reads and writes settings. |
-| `helper/` | The small root helper for RAM lights on desktop Linux. |
+| `service/rgbhub/platforms/` | One folder per system (`gnome/`, `batocera/`, `windows/`) that picks platform code and wires in that system's settings storage, timers and "what is in focus"; `linux/` holds what the two Linux ones share: `hidraw.py` (USB devices), `ram.py` (RAM writes), `openrgb.py` (case lights), `glib_runtime.py` (event loop). |
+| `service/rgbhub/updater/` | The self-updater. Standard library only. |
+| `frontends/` | What you see and touch: the GNOME Shell extension, the Batocera service switch and game hook, the settings web page and the Windows notes. A front end only reads and writes settings. |
+| `helper/` | The small helpers with full rights for RAM lights (desktop Linux, Windows). |
 | `install/`, `systemd/` | Set-up scripts and service definitions. |
 
-**Adding a device**: write `devices/<name>.py` with the calls listed in
-`core/device.py` (most of the lights work is `core/light_group.py`), add
-platform code if it needs some, add it to each platform's list and its id to
-`DEVICE_IDS` in `core/settings_schema.py`, and give it a tab in the front
-ends.
+**Adding a device**: one new folder under `service/rgbhub/devices/` with its
+protocol code and a `device.py` that fits `core/device.py` (most of the
+lights work is `core/light_group.py`), whose `__init__.py` has `DEVICE_ID`
+and `build(platform)`. Then one line in `DEVICES` in
+`devices/__init__.py` and its id in `DEVICE_IDS` in
+`core/settings_schema.py`. Every system builds its devices from that list,
+and the settings windows build their tabs from what each device reports, so
+nothing else changes. The one exception is EmuBox's Batocera menu, which
+has a fixed list and needs a one-line edit too.
 
-**Adding a system** (another distro, Windows): write
-`platforms/<name>/` (its `__init__.py`) with a `main()` that builds a `Hub` and its devices
-from the pieces that fit, and list it in `service/rgbhub/__main__.py`. Reuse the
-platform code that works there; add some where it does not.
+**Adding a system**: write `platforms/<name>/` with a `main()` that fills
+in the interfaces in `core/interfaces.py` (`HidBus`/`HidPort` for USB,
+`RamBus` for RAM lights, `Runtime` for timers and the event loop,
+`Settings` for storage), a source for "what is in focus" and an icon
+loader, and builds the `Hub` and its devices. List it in
+`service/rgbhub/__main__.py`. The core does not change. See "Platforms
+and interfaces" in [docs/design.md](docs/design.md).
 
 **Adding a front end**: anything that can write the settings in
 `core/settings_schema.py` and read the `status` report is a front end.
@@ -251,10 +317,13 @@ gsettings --schemadir ~/.local/share/gnome-shell/extensions/rgbhub@konfus-dev.gi
 
 ## Uninstall
 
+On Windows see the [Windows section](#windows) above. On Ubuntu:
+
 ```sh
 gnome-extensions disable rgbhub@konfus-dev.github.io
-systemctl --user disable --now rgbhub openrgb-server
-rm ~/.config/systemd/user/rgbhub.service ~/.config/systemd/user/openrgb-server.service
+systemctl --user disable --now rgbhub openrgb-server rgbhub-update.timer
+rm ~/.config/systemd/user/rgbhub.service ~/.config/systemd/user/openrgb-server.service \
+   ~/.config/systemd/user/rgbhub-update.service ~/.config/systemd/user/rgbhub-update.timer
 rm ~/.local/share/gnome-shell/extensions/rgbhub@konfus-dev.github.io
 rm -r ~/.local/share/rgbhub
 rm -r ~/.config/rgbhub

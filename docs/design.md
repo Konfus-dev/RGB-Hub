@@ -10,8 +10,12 @@ using it, see the [README](../README.md).
 - Put the owner's own images on the cooler LCD and keep them there.
 - Set colour, effect and brightness for the case lights, the RAM sticks and
   the keyboard.
-- One place for all of it: a button in the GNOME system menu that opens a
-  settings window with an Auto tab and a tab per device.
+- One place for all of it: a button in the GNOME system menu (an icon in
+  the tray on Windows) that opens a settings window with an Auto tab and a
+  tab per device.
+- Run on Ubuntu (GNOME), Batocera and Windows from the same core, and make
+  a new system one more folder that fills in a few named interfaces.
+- Keep each installed copy up to date by itself, safely (see "Updates").
 - When the hub stops, leave every device showing the owner's Default look.
 - Settings return by themselves after a reboot.
 - Easy to change later: one job per file, hardware numbers in one place,
@@ -35,12 +39,18 @@ using it, see the [README](../README.md).
 
  GNOME Shell extension --+
                          +-> gnome/ -------+
-                                           +--> Hub --> OmenPc ---------> LcdStreamer -> platforms/linux/hidraw.py -> cooler LCD
- Batocera service switch +                 |     |        |------------> Lights ------> platforms/linux/openrgb.py -> case lights
- and game hook ----------+-> batocera/ -----+     |        |                        \---> tracer.py   -> case lights
-                                                 |        \------------> RamLights ---> platforms/linux/ram.py -> BIOS -> RAM
-                                                 \----> IqunixKeyboard -> Lights ------> via.py      -> keyboard
+ Batocera service switch |                 |
+ and game hook ----------+-> batocera/ ----+--> Hub --> OmenPc ---------> LcdStreamer -> HidBus --------> cooler LCD
+                         |                 |     |        |------------> Lights ------> OpenRGB or      case lights
+ Windows tray icon and --+-> windows/ -----+     |        |                             case_board.py
+ settings web page                               |        \------------> RamLights ---> RamBus --------> RAM
+                                                 \----> IqunixKeyboard -> Lights ------> HidBus --------> keyboard
 ```
+
+`HidBus` and `RamBus` are the interfaces from `core/interfaces.py`; each
+platform hands the core its own version (`platforms/linux/hidraw.py` or
+`platforms/windows/hid.py` for USB, and so on; see "Platforms and
+interfaces").
 
 - **core** (`service/rgbhub/core/`) decides what each device should show.
   It imports no operating-system or hardware-library modules. The `Hub`
@@ -55,33 +65,101 @@ using it, see the [README](../README.md).
   reads settings only through the hub (`hub.get`), which is what lets the
   hub show the Default look on the way out.
 - **platforms** (`service/rgbhub/platforms/`) are the only place that
-  knows about a particular system, one folder each (`gnome/`, `batocera/`),
-  plus `linux/` for the code both share (USB devices, RAM writes, OpenRGB,
-  the GLib event loop). Each system has a `main()` that picks the platform
-  code to use, a settings store, timers, and a source for "what is in
-  focus", and builds the `Hub` and its devices from them.
+  knows about a particular system, one folder each (`gnome/`, `batocera/`,
+  `windows/`), plus `linux/` for the code the two Linux ones share (USB
+  devices, RAM writes, OpenRGB, the GLib event loop). Each system has a
+  `main()` that picks the platform code to use, a settings store, timers,
+  and a source for "what is in focus", and builds the `Hub` and its devices
+  from them.
+- **updater** (`service/rgbhub/updater/`) keeps an installed copy up to
+  date. It is a separate program that uses only the standard library (see
+  "Updates").
 - **front ends** (`frontends/`) never touch hardware. A front end writes
   the settings listed in `core/settings_schema.py` and reads the `status`
   report; that list is the whole contract.
 
-| | GNOME desktop | Batocera |
-|---|---|---|
-| Front end | Shell extension: menu button and settings window | Service switch, game hook, a JSON file |
-| Settings store | GSettings (`gnome/gsettings_store.py`) | JSON file (`core/json_store.py`) |
-| Case lights | OpenRGB server (`linux/openrgb.py`) | own driver (`tracer.py`) |
-| RAM lights | root helper over a socket | in-process (the service is root), if `acpi_call` exists |
-| In focus | the focused app; its icon from the icon theme | the running game; its scraped artwork |
-| Idle look (nothing in focus) | the wallpaper and its main colour (`gnome/gnome_theme.py`) | the menu theme's background (`batocera/theme.py`) |
-| LCD override folder (`core/lcd_folder.py`) | `~/.config/rgbhub/lcd/` | `rgb-hub/` in the active theme |
-| Sleep/wake | systemd-logind | Batocera's suspend/resume hooks |
-| Timers, file watching | GLib (`linux/glib_runtime.py`) | GLib |
+| | GNOME desktop | Batocera | Windows |
+|---|---|---|---|
+| Front end | Shell extension: menu button and settings window | Service switch, game hook, a JSON file | Tray icon (`windows/tray.py`) and a settings web page (`frontends/web/`, served by `core/web.py`) in an Edge app window |
+| Settings store | GSettings (`gnome/gsettings_store.py`) | JSON file (`core/json_store.py`) | JSON file, `%APPDATA%\rgbhub\settings.json` |
+| USB devices (`HidBus`) | hidraw (`linux/hidraw.py`) | hidraw | hidapi (`windows/hid.py`) |
+| Case lights | OpenRGB server (`linux/openrgb.py`) | own driver (`case_board.py`) | own driver (`case_board.py`) |
+| RAM lights (`RamBus`) | root helper over a socket | in-process (the service is root), if `acpi_call` exists | helper with full rights, reached over a local connection with a key (`windows/ram.py`) |
+| In focus | the focused app; its icon from the icon theme | the running game; its scraped artwork | the app in front (`windows/focus.py`); its icon from the program file, or from the Store app's package (`windows/icons.py`) |
+| Idle look (nothing in focus) | the wallpaper and its main colour (`gnome/gnome_theme.py`) | the menu theme's background (`batocera/theme.py`) | the wallpaper Windows shows now, else the Windows logo (`windows/wallpaper.py`) |
+| LCD override folder (`core/lcd_folder.py`) | `~/.config/rgbhub/lcd/` | `rgb-hub/` in the active theme | `%APPDATA%\rgbhub\lcd\` |
+| Sleep/wake | systemd-logind | Batocera's suspend/resume hooks | Windows' power messages, heard by a hidden window (`windows/session.py`) |
+| Timers, file watching (`Runtime`) | GLib (`linux/glib_runtime.py`) | GLib | `core/thread_runtime.py` (the standard library's asyncio loop) |
+| Updates | systemd user timer | the service script's loop | a scheduled task |
 
 A bug in a front end cannot stall hardware handling, and a new system does
 not touch the core: it is one more folder in `platforms/`.
 
 On the GNOME desktop the parts run as: the extension inside GNOME Shell,
 the service and an OpenRGB server as systemd user units, and the RAM helper
-as a socket-activated root unit.
+as a socket-activated root unit. On Windows they run as three scheduled
+tasks that start at sign-in: the hub and the updater with the owner's normal
+rights, and the RAM helper with full rights.
+
+## Platforms and interfaces
+
+The core is handed everything that touches a system. The shapes it expects
+are written down in `core/interfaces.py`:
+
+| Interface | What it is for |
+|---|---|
+| `HidBus` and `HidPort` | Find a USB device (`HidMatch`: vendor, product, and optionally the usage page) and open it; write and read reports; say whether it was unplugged. A failure raises `OSError`. |
+| `RamBus` | Send a batch of RAM register writes; say which sticks are there. |
+| `Runtime` | Timers (`every`, `cancel`), file watching, `call_soon` (run something on the loop from any thread), `run_until_stopped`, `stop`. |
+| `Settings` | `get`, `set`, `subscribe`. Where the front end's choices live and where `status` is written. |
+| `Platform` (`core/platform.py`) | What a system gives the devices: its `HidBus`, `Runtime`, a `RamBus` if it has one, how to open the case lights, whether the LCD fades. |
+
+`interfaces.py` also holds in-memory fakes (`FakeHidBus`, `FakeHidPort`)
+for tests. `tests/test_contracts.py` runs one set of checks against every
+real version of each interface that can run on the test machine, so a new
+one is tested by adding it to that list.
+
+**To add a system**, write `platforms/<name>/` with:
+
+- a `HidBus`/`HidPort` for its USB access, and a `RamBus` if the RAM lights
+  can work there (otherwise leave it out and the RAM is reported
+  unavailable);
+- a `Runtime` for its timers and event loop (`core/thread_runtime.py` is
+  one that needs nothing system-specific);
+- a `Settings` store (`core/json_store.py` already does a JSON file);
+- the pieces for auto mode: a source for "what is in focus", an icon
+  loader, an idle picture, and a `Looks(...)` built from them
+  (`core/look.py`);
+- sleep/wake calls to `hub.on_sleep` and `hub.on_resume`, and a stop that
+  calls `hub.stop()`;
+- a `main()` that builds a `Platform`, calls `devices.build_all(platform)`
+  and starts the `Hub`; then list the system in `service/rgbhub/__main__.py`.
+
+Nothing in `core/` or `devices/` changes. Reuse what another platform
+already has: Windows and Batocera share the JSON store and the case lights'
+own driver; the two Linux platforms share `linux/`.
+
+## Adding a device
+
+A device is one folder in `service/rgbhub/devices/` with the protocol code,
+its model facts (zone and effect names, hidden zones) and a `device.py` that
+fits `core/device.py`. The folder's `__init__.py` gives `DEVICE_ID` and
+`build(platform)`. `build` takes what the system offers (its `HidBus`,
+`RamBus`, ...) and returns the device, or `None` if this system cannot run
+it. (Both devices today work everywhere, so neither returns `None` yet.)
+
+Then two small edits:
+
+- one line in `devices/__init__.py`, in `DEVICES`, which every platform
+  builds its devices from;
+- the id in `DEVICE_IDS` in `core/settings_schema.py` (a test checks that
+  the two lists agree).
+
+Each device describes itself in the `status` report (`label`, `icon`, whether it has an LCD, what is connected),
+and the GNOME window and the web page build their tabs from that, so no
+front end needs a change. The one exception is EmuBox's Batocera menu: it
+reads its list of devices only when Batocera starts, so it keeps a fixed list
+and needs a one-line edit too.
 
 ## Cooler LCD
 
@@ -157,6 +235,20 @@ password prompt per change (unusable). The helper:
 Register meanings come from HP's module and from OpenRGB's
 `KingstonFuryDRAMController`.
 
+On Windows the same rule holds: a helper with full rights is the only part
+that reaches the BIOS, and it is the same helper's checks
+(`helper/rgbhub_ram_helper.py`) with a different way to the BIOS. It asks
+HP's WMI method `hpqBIntM.hpqBIOSInt128` (the same request as the Linux
+ACPI call), which the BIOS provides itself, so removing OMEN Gaming Hub does
+not take RAM lighting away. The helper (`helper/rgbhub_ram_helper_windows.py`,
+standard library only) runs from `C:\Program Files\RGB-Hub\`, where only
+administrators can write, so unprivileged code cannot swap it. The hub
+reaches it over a local connection on `127.0.0.1` using the standard
+library's `multiprocessing.connection`, which turns away anyone without the
+key in `%LOCALAPPDATA%\rgbhub\ram-key` (readable only by the owner,
+SYSTEM and administrators). Without the helper the RAM is reported
+unavailable, as on Batocera without `acpi_call`.
+
 Each write takes about 65 ms through the BIOS, so `devices/omen_pc/ram.py` remembers what
 every register holds and sends only the ones that changed, on a worker
 thread, newest request wins. A colour change is then about ten writes
@@ -178,12 +270,25 @@ OS logo, with that picture's main colour; `auto-idle-image` and
 `auto-idle-colour` override it). This project's own settings window falls
 back to the normal settings.
 
+On Windows the app in front is checked twice a second (`platforms/windows/focus.py`)
+and its id is the program file's path, or the package family for a Store app.
+Its icon is read out of the program file by the `icoextract` library (the
+largest picture in it) or, for a Store app, from the logos its package
+names in its manifest (`icons.py`). With nothing in focus the LCD shows the
+LCD folder, else the wallpaper Windows is showing now, else a Windows logo
+(`wallpaper.py`). RGB-Hub only reads the wallpaper; with Windows' own
+Slideshow setting it changes by itself. The tray menu, the lock screen,
+Start and RGB-Hub's own settings window do not count as an app in front.
+
 ## Sleep
 
 The service holds a logind "delay" lock. Just before the computer sleeps it
 turns the LCD, case lights and RAM off, then releases the lock. After
 waking it sends every setting again, in case the hardware lost them.
 On Batocera the menu's suspend and resume hooks send the same two messages.
+On Windows a hidden window hears the power messages (`windows/session.py`);
+it also hears sign-out and shutdown and stops the hub, so the Default look
+is shown then too.
 
 Those messages are not relied on. Every few seconds the service compares a
 clock that counts through sleep with one that does not; a jump means the
@@ -200,6 +305,11 @@ it switches everything back on.
   hardware detectors that the restricted config does not switch off.
 - **Batocera**: the service script keeps the program running itself,
   restarting it after a crash with a growing pause.
+- **Windows**: three scheduled tasks start at sign-in. Quitting from the tray
+  stops the hub for good; any other exit makes the launcher
+  (`windows/launcher.py`) start it again. Inside the WinBridge virtual
+  machine, which boots this same Windows, none of it starts: the lights belong
+  to the real PC.
 - A settings file that cannot be read (half-saved, or with a typo) changes
   nothing: the last good settings stay in force and the problem is logged once.
 - The RAM helper only reports itself ready when the BIOS can be reached, so a
@@ -211,15 +321,94 @@ it switches everything back on.
 Every setting and its default is listed in `core/settings_schema.py`. On
 GNOME they are stored in GSettings (schema in
 `frontends/gnome-shell/…/schemas/`, checked against that list by a test);
-on Batocera in a JSON file. The front end writes; the service watches. The
+on Batocera and Windows in a JSON file. The front end writes; the service watches. The
 `status` key goes the other way: the service writes a JSON report (what is
 connected, the last image error, and the lighting devices with their
 zones, effects and display names).
 
+## Updates
+
+Each system keeps an installed copy that follows `main` on GitHub
+(`Konfus-dev/RGB-Hub`). Your working copy (`~/Source/RGB-Hub`) is never
+touched by it.
+
+- **A separate program.** `python -m rgbhub.updater` uses only the standard
+  library, so a broken hub version cannot break updating. It runs at
+  start-up and then every hour: a systemd user timer on Ubuntu, a scheduled
+  task on Windows, the service script's loop on Batocera.
+- **It only goes forward.** It asks GitHub for the newest commit on `main`
+  and applies it only if GitHub says it is ahead of the installed one.
+  A commit that is older, or on another branch, is ignored.
+- **Each version has its own folder**, `versions/<commit>/`, next to a
+  `current` marker (a symlink on Ubuntu; a `current.txt` on Windows and
+  Batocera, where the disk may not allow symlinks). A new version is
+  downloaded and unpacked beside the old one, gets its libraries, and must
+  pass `python -m rgbhub --self-check` (it imports everything the platform
+  uses and builds the hub against fakes) before the marker moves. Then the
+  hub restarts. The last few versions are kept.
+- **Rollback.** If the restarted hub exits or crashes within a minute, the
+  updater switches back to the previous version, remembers the bad commit
+  and skips it until `main` moves on. It says so in its log and, on Ubuntu
+  and Windows, with a notification.
+- **When.** At once on Ubuntu and Windows (the lights show the Default look
+  for a moment while the hub restarts). On Batocera only when no game is
+  running.
+- **Parts that run with full rights are never updated silently** on Ubuntu
+  and Windows: the RAM helper, the udev rules and systemd units, the
+  Windows setup scripts and scheduled-task definitions. Otherwise anyone
+  who could push to the repository would get administrator rights on
+  every machine. The updater runs with your normal rights, installs
+  everything else, and asks you to approve that part: a notification and a
+  password prompt (`pkexec`) on Ubuntu; "Approve update..." in the tray menu
+  and one admin prompt (UAC) on Windows. On Windows the admin step checks
+  those files against GitHub's own copy before installing them. Batocera
+  runs everything as root already, so it updates everything.
+- **Settings are never changed by an update.** A new GNOME extension takes
+  effect at the next login.
+- **Developing on Ubuntu**: `bash install/install-user.sh --dev` runs the
+  service straight from the working copy and pauses the updater;
+  `--release` (the default) goes back to following `main`.
+
+The first install on each system lays out the same folders, so the updater
+needs no special case for it: `install-user.sh` on Ubuntu,
+`install-batocera.sh` (and EmuBox's `rgb-hub` component) on Batocera,
+`install-windows.sh` on Windows.
+
+## Windows install
+
+`install/install-windows.sh` runs on Ubuntu with `pkexec` and installs onto
+the Windows partition. It first refuses unless Windows was shut down fully
+(not hibernated, no Fast Startup, registry closed cleanly) and the WinBridge
+virtual machine is not running. It mounts the partition writable only for
+the copy, and always makes it read-only again, also when something fails.
+
+It puts the RAM helper and Windows' embeddable Python in
+`C:\Program Files\RGB-Hub\` (admin-writable only), and the hub, with its
+libraries, in `%LOCALAPPDATA%\Programs\RGB-Hub\versions\<commit>\`, which the
+owner can write, so the updater needs no elevation. It copies your Ubuntu
+settings and pictures into `%APPDATA%\rgbhub\` once, only if Windows has
+no settings yet, and leaves `RGB-Hub setup.cmd` in the Startup folder.
+
+At the next Windows sign-in that file asks once for administrator rights
+(UAC) and runs `finish-setup.ps1`, which:
+
+- resets the permissions of the install folders;
+- makes the key the hub and the RAM helper share;
+- registers the three scheduled tasks;
+- uninstalls OMEN Gaming Hub (for new accounts too) and switches off HP's
+  OMEN and analytics services, noting their old start types so
+  `uninstall.ps1` can put them back;
+- starts the tasks and deletes the Startup entry.
+
+Everything is logged to `%LOCALAPPDATA%\rgbhub\setup.log`. The scripts
+refuse to follow a link or junction in the owner's folders, because they
+run with full rights.
+
 ## Tested hardware
 
 OMEN by HP 45L GT22-3xxx (board 8D2C), Ubuntu 26.04, GNOME Shell 50,
-OpenRGB 0.9, LCD firmware V3.05.024.
+OpenRGB 0.9, LCD firmware V3.05.024. The same machine's Windows 11 is the
+Windows target.
 
 ## Devices and their settings
 
