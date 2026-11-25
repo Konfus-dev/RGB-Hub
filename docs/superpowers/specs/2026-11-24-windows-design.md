@@ -104,7 +104,7 @@ Implementations:
 |---|---|---|
 | HidBus | `backends/hidraw.py` (sysfs; usage page read from the report descriptor) | `backends/hidapi_bus.py` (the `hidapi` wheel) |
 | RamBus | `backends/ram_bios.py`: socket helper (GNOME) / in-process acpi_call (Batocera) | `backends/ram_wmi.py`: client of the Windows RAM helper |
-| Runtime | `platforms/glib_runtime.py` | `platforms/thread_runtime.py` (stdlib: one loop thread, heap of timers, `watch_file` by polling mtime once a second) |
+| Runtime | `platforms/glib_runtime.py` | `core/thread_runtime.py` (the standard library's `asyncio` loop; `watch_file` by polling mtime once a second) |
 | Settings | GSettings / JSON | `JsonSettings` (reused as is) |
 
 **Conformance tests**: `tests/test_contracts.py` runs one shared test
@@ -129,9 +129,8 @@ with the same `OmenPc` and `IqunixKeyboard`.
   Batocera does) → foreground window → process. App id = the exe path, or
   the package family for Store/UWP apps (`ApplicationFrameHost`). Written
   to `focused-app`. RGB-Hub's own windows are in `Looks(ignore=…)`.
-- **Icons** (`platforms/win_icons.py`): the largest icon Windows has for
-  the exe/package (`IShellItemImageFactory` at 256 px, falling back to
-  `ExtractIconEx`), as a Pillow RGBA image → `Looks` exactly as on GNOME.
+- **Icons** (`platforms/win_icons.py`): the largest icon for the exe (the
+  `icoextract` library) or the Store package's logo from its manifest, as a Pillow RGBA image → `Looks` exactly as on GNOME.
   `version` = icon-cache/theme change marker, so changed icons re-colour.
 - **Idle picture**: `%APPDATA%\rgbhub\lcd\` (core `lcd_folder.py`), else
   the wallpaper (`SystemParametersInfo(SPI_GETDESKWALLPAPER)`, falling
@@ -159,8 +158,9 @@ which is factored so the transport (acpi_call vs WMI) is a parameter.
   `5FB7F034-2C63-45E9-BE91-3D44E2C707E4` is listed by the firmware itself
   (seen under `/sys/bus/wmi/devices` on Ubuntu, where no HP software runs),
   so removing OMEN Gaming Hub cannot take RAM lighting away.
-- **Transport to the hub**: a named pipe `\\.\pipe\rgbhub-ram` whose DACL
-  allows only the owner's account (and SYSTEM). Same line protocol
+- **Transport to the hub**: a named pipe `\\.\pipe\rgbhub-ram` through the
+  standard library's `multiprocessing.connection` (Listener/Client with an
+  authkey only the owner's account can read). Same line protocol
   (`W aa rr vv` / `PING` → `OK` / `ERR …`).
 - **Runs** as a scheduled task at the owner's sign-in with highest
   privileges, from `C:\Program Files\RGB-Hub\` (admin-writable only, so the
@@ -386,3 +386,9 @@ Every system keeps an installed copy that follows `main` of
    protocol code with its device (section 7).
 4. **Adding a device must be easy**: one folder + one line (section 8).
 5. **Auto-updater on all three systems**, following `main` (section 9).
+
+Owner's rule (2026-11-24): re-use existing tools and libraries; do not
+invent new solutions. Applied: asyncio for the Windows event loop,
+`multiprocessing.connection` for the RAM pipe, `icoextract` for exe icons,
+Windows' own Slideshow setting for changing wallpapers (RGB-Hub only reads
+the wallpaper Windows is showing; it never picks or changes one).
