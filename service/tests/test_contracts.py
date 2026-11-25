@@ -83,3 +83,61 @@ def test_thread_runtime_survives_raising_timer():
     finally:
         watchdog.cancel()
     assert len(calls) >= 3
+
+
+def _run_with_watchdog(runtime) -> None:
+    watchdog = threading.Timer(5.0, runtime.stop)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        runtime.run_until_stopped()
+    finally:
+        watchdog.cancel()
+
+
+def test_thread_runtime_every_from_other_thread_wakes_idle_loop():
+    import time
+
+    from rgbhub.core.thread_runtime import ThreadRuntime
+
+    runtime = ThreadRuntime()
+    fired = []
+    started = time.monotonic()
+
+    def late() -> bool:
+        fired.append(time.monotonic() - started)
+        runtime.stop()
+        return False
+
+    threading.Timer(0.3, lambda: runtime.every(10, late)).start()
+    _run_with_watchdog(runtime)
+    assert fired and fired[0] < 1.0
+
+
+def test_thread_runtime_cancel_from_other_thread():
+    from rgbhub.core.thread_runtime import ThreadRuntime
+
+    runtime = ThreadRuntime()
+    ticks = []
+    handle = runtime.every(10, lambda: ticks.append(1) or True)
+    runtime.every(300, lambda: runtime.stop() or False)
+
+    def cancel_later() -> None:
+        runtime.cancel(handle)
+        runtime.cancel(handle)
+
+    threading.Timer(0.1, cancel_later).start()
+    _run_with_watchdog(runtime)
+    count = len(ticks)
+    assert 0 < count < 25  # ran while alive, and stopped after the cancel
+
+
+def test_thread_runtime_none_return_ends_timer():
+    from rgbhub.core.thread_runtime import ThreadRuntime
+
+    runtime = ThreadRuntime()
+    calls = []
+    runtime.every(10, lambda: calls.append(1))  # returns None
+    runtime.every(200, lambda: runtime.stop() or False)
+    _run_with_watchdog(runtime)
+    assert calls == [1]
