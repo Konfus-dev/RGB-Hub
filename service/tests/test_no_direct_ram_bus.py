@@ -50,13 +50,31 @@ CTYPES_FILES = {
 WINDOWS_DLLS = {
     "user32", "kernel32", "shell32", "gdi32", "ole32", "combase", "dwmapi", "advapi32",
 }  # fmt: skip
-IMPORTS_CTYPES = re.compile(r"\b(?:import|from)\s+ctypes\b|\b__import__\(\s*[\"']ctypes")
-# Any way of loading a DLL by name: ctypes.WinDLL("x"), windll.x, cdll.LoadLibrary("x"), ...
+# ctypes (or its C half, _ctypes) named in an import line, or imported by name.
+IMPORTS_CTYPES = re.compile(
+    r"^\s*(?:import|from)\b.*\b_?ctypes\b"
+    r"|\b(?:__import__|import_module)\(\s*[\"']_?ctypes\b",
+    re.MULTILINE,
+)
+# Any way of loading a DLL: ctypes.WinDLL("x"), windll.x, cdll.LoadLibrary("x"), and the
+# ways that hide the name (windll["x"], getattr(windll, x)), which are never allowed.
 LOADS_DLL = re.compile(
     r"\b(?:WinDLL|CDLL|OleDLL|PyDLL|LoadLibrary\w*)\s*\(\s*(?P<call>[^,)]*)"
-    r"|\b(?:windll|oledll|cdll|pydll)\.(?P<attr>\w+)",
+    r"|\b(?:windll|oledll|cdll|pydll)\.(?P<attr>\w+)"
+    r"|(?P<hidden>\b(?:windll|oledll|cdll|pydll)\s*\[|\bgetattr\(\s*(?:ctypes\.)?"
+    r"(?:windll|oledll|cdll|pydll)\b)",
     re.IGNORECASE,
 )
+# Kernel32 can open a driver's device (\\.\RwDrv, \\?\GLOBALROOT\Device\...) and send it
+# raw requests: that is how port / SMBus drivers are reached. Only named pipes
+# (\\.\pipe\...) and HID devices (hidapi's \\?\hid#... paths) may be named.
+DEVICE_ACCESS = [
+    (re.compile(r"DeviceIoControl"), "raw driver requests (DeviceIoControl)"),
+    (
+        re.compile(r"(?:\\{2,4}|/{2})[.?][\\/](?![\\/]*(?:pipe[\\/]|hid#))", re.IGNORECASE),
+        "a device path other than a named pipe or a HID device",
+    ),
+]
 # Kernel drivers that give programs raw port / SMBus access on Windows.
 PORT_DRIVERS = re.compile(r"(?i)winring0|inpout|pawnio")
 
@@ -156,6 +174,20 @@ def test_the_ram_code_never_names_the_controllers_bus_addresses():
     assert hits == [], "\n".join(hits)
 
 
+def test_the_ctypes_check_sees_every_import():
+    for line in (
+        "import ctypes",
+        "import os, ctypes",
+        "from ctypes import wintypes",
+        "    import ctypes.wintypes as w",
+        "import _ctypes",
+        'ct = importlib.import_module("ctypes")',
+        "ct = __import__('ctypes')",
+    ):
+        assert IMPORTS_CTYPES.search(line), line
+    assert not IMPORTS_CTYPES.search("# ctypes is used in focus.py")
+
+
 def test_ctypes_only_in_the_windows_desktop_files():
     using = {name for name, text in FILES if IMPORTS_CTYPES.search(text)}
     assert using <= CTYPES_FILES, sorted(using - CTYPES_FILES)
@@ -165,10 +197,13 @@ def test_ctypes_only_in_the_windows_desktop_files():
 def _dll_name(match: re.Match) -> str:
     """The DLL a LOADS_DLL match loads: its file name without folder or ".dll"
     (anything that is not a plain name, like a variable, stays as written)."""
+    if match["hidden"] is not None:
+        return "<hidden name>"
     if match["attr"] is not None:
         return match["attr"].lower()
+    # A folder in the name is never allowed: Windows' own DLLs are found by name alone.
     name = match["call"].strip().lstrip("rRbB").strip("\"'")
-    return re.split(r"[\\/]+", name)[-1].lower().removesuffix(".dll")
+    return name.lower().removesuffix(".dll")
 
 
 def test_only_windows_own_dlls_are_loaded():
@@ -189,9 +224,50 @@ def test_the_dll_check_catches_other_dlls():
 
     assert names('ctypes.WinDLL("user32", use_last_error=True)') == ["user32"]
     assert names("ctypes.windll.kernel32.Beep(1, 1)") == ["kernel32"]
-    assert names('ctypes.WinDLL(r"C:\\Tools\\WinRing0x64.dll")') == ["winring0x64"]
+    assert names('ctypes.WinDLL("user32.dll")') == ["user32"]
+    assert names('ctypes.WinDLL(r"C:\\Tools\\WinRing0x64.dll")') == [r"c:\tools\winring0x64"]
+    assert names('ctypes.WinDLL(r"C:\\x\\user32.dll")') == [r"c:\x\user32"]  # not allowed
+    assert names('ctypes.windll["user32"]') == ["<hidden name>"]
+    assert names("getattr(ctypes.windll, name)") == ["<hidden name>"]
+    assert names("getattr(windll, 'user32')") == ["<hidden name>"]
     assert names('ctypes.cdll.LoadLibrary("inpoutx64.dll")') == ["loadlibrary"]
     assert names("ctypes.CDLL(path)") == ["path"]
+
+
+def _device_access(line: str) -> list[str]:
+    return [why for regex, why in DEVICE_ACCESS if regex.search(line)]
+
+
+def test_no_raw_device_access():
+    hits = [
+        f"{name}:{number}: {line.strip()} ({', '.join(_device_access(line))})"
+        for name, text in FILES
+        if name.startswith(("service/", "helper/"))
+        for number, line in enumerate(text.splitlines(), 1)
+        if _device_access(line)
+    ]
+    assert hits == [], "\n".join(hits)
+
+
+def test_the_device_check_catches_driver_paths():
+    for line in (
+        r'k.CreateFileW(r"\\.\RwDrv", 0, 0, None, 3, 0, None)',
+        'k.CreateFileW("\\\\\\\\.\\\\WinRing0_1_2_0", 0)',
+        r'open(r"\\?\GLOBALROOT\Device\PawnIO")',
+        'open("//./PhysicalDrive0")',
+        r'k.CreateFileW(r"\\.\pipeline_driver")',  # not a pipe: no "\" after "pipe"
+        "k.DeviceIoControl(handle, code, data, len(data), None, 0, None, None)",
+        "ntdll.NtDeviceIoControlFile(handle)",
+    ):
+        assert _device_access(line), line
+    for line in (
+        r'PIPE = r"\\.\pipe\rgbhub-ram"',
+        'PIPE = "\\\\\\\\.\\\\pipe\\\\rgbhub-ram"',
+        r'icon = r"C:\\Games\\Doom.exe"',
+        r'path = b"\\?\hid#vid_103c&pid_84fd"',
+        'url = "http://127.0.0.1:8000/"',
+    ):
+        assert not _device_access(line), line
 
 
 def test_no_port_access_drivers_are_named():

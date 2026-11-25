@@ -140,6 +140,73 @@ def test_foreground_app_is_none_off_windows():
     assert focus.foreground_app() is None
 
 
+class FakeWin32:
+    """The Win32 layer focus.foreground_app() reads through: one window and its processes."""
+
+    def __init__(self, exe, family=None, window_class="Chrome_WidgetWin_1", child=None):
+        self.window_class = window_class
+        self.processes = {10: (exe, family)}
+        if child:
+            self.processes[20] = child
+
+    def foreground_window(self):
+        return 1
+
+    def class_name(self, hwnd):
+        return self.window_class
+
+    def title(self, hwnd):
+        return "a window"
+
+    def pid(self, hwnd):
+        return 10
+
+    def child_pid(self, hwnd, frame_pid):
+        return 20 if 20 in self.processes else 0
+
+    def process(self, pid):
+        return self.processes.get(pid, (None, None))
+
+
+def test_foreground_app_reads_a_program():
+    app = focus.foreground_app(FakeWin32(r"C:\Firefox\firefox.exe"))
+    assert app == Foreground(r"C:\Firefox\firefox.exe", None, 10, "a window")
+
+
+def test_foreground_app_looks_past_the_store_frame():
+    frame = r"C:\Windows\System32\ApplicationFrameHost.exe"
+    calc = (CALC_DIR + r"\CalculatorApp.exe", CALC_FAMILY)
+    assert focus.foreground_app(FakeWin32(frame, child=calc)) == Foreground(*calc, 20, "a window")
+    assert focus.foreground_app(FakeWin32(frame)) is None  # app not shown yet
+
+
+def test_foreground_app_desktop_and_unreadable_are_none():
+    desktop = FakeWin32(r"C:\Windows\explorer.exe", window_class="WorkerW")
+    assert focus.foreground_app(desktop) is None
+    assert focus.foreground_app(FakeWin32(None)) is None  # OpenProcess refused (elevated app)
+
+
+def test_foreground_app_lock_screen_and_start_are_none():
+    for exe in (
+        r"C:\Windows\SystemApps\Microsoft.LockApp_cw5n1h2txyewy\LockApp.exe",
+        r"C:\Windows\SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SearchHost.exe",
+        r"C:\Windows\SystemApps\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy"
+        r"\StartMenuExperienceHost.exe",
+        r"C:\Windows\SystemApps\ShellExperienceHost_cw5n1h2txyewy\ShellExperienceHost.exe",
+        r"C:\Windows\SystemApps\Microsoft.Windows.Search_cw5n1h2txyewy\SearchApp.exe",
+        r"C:\Windows\SystemApps\MicrosoftWindows.Client.Core_cw5n1h2txyewy\ShellHost.exe",
+    ):
+        assert focus.foreground_app(FakeWin32(exe, "Some.Family_cw5n1h2txyewy")) is None, exe
+
+
+def test_foreground_app_layer_failure_is_none():
+    class Broken(FakeWin32):
+        def process(self, pid):
+            raise OSError("access denied")
+
+    assert focus.foreground_app(Broken("x")) is None
+
+
 # --- the wallpaper and the logo -------------------------------------------------
 
 
@@ -221,6 +288,21 @@ def test_manifest_found_above_the_exe_folder(tmp_path):
     (tmp_path / "bin").mkdir()
     icon = icons.load_app_icon(f"{CALC_FAMILY}|{tmp_path / 'bin'}")
     assert icon.size == (256, 256)
+
+
+def test_manifest_logo_outside_the_package_is_not_opened(tmp_path):
+    package = tmp_path / "package"
+    package.mkdir()
+    Image.new("RGBA", (500, 500), "red").save(tmp_path / "Outside.png")
+    Image.new("RGBA", (500, 500), "red").save(tmp_path / "Outside.scale-200.png")
+    (package / "AppxManifest.xml").write_text(
+        MANIFEST.replace("Assets\\Logo.png", "..\\Outside.png")
+    )
+    make_assets = package / "Assets"
+    make_assets.mkdir()
+    Image.new("RGBA", (44, 44), "green").save(make_assets / "Small.png")
+    icon = icons.load_app_icon(f"{CALC_FAMILY}|{package}")
+    assert icon.size == (44, 44)
 
 
 def test_package_without_manifest_has_no_icon(tmp_path):

@@ -30,6 +30,16 @@ POLL_MS = 500
 OWN_TITLE_PREFIXES = ("RGB-Hub", "RGB Hub")
 # The desktop and the taskbar: being "in front" there means no app is.
 NO_APP_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+# Windows' own lock screen, Start menu, search and pop-ups. They are Store
+# packages, so they would read as apps; being there means no app is in front.
+NO_APP_EXES = {
+    "lockapp.exe",
+    "startmenuexperiencehost.exe",
+    "searchhost.exe",
+    "searchapp.exe",
+    "shellexperiencehost.exe",
+    "shellhost.exe",
+}
 FRAME_HOST = "applicationframehost.exe"  # hosts Store apps' windows
 
 
@@ -89,15 +99,36 @@ class FocusWatcher:
         return app.pid == self._own_pid or app.title.startswith(OWN_TITLE_PREFIXES)
 
 
-def foreground_app() -> Foreground | None:
-    """The app in front, or None when there is none or it cannot be read."""
-    if sys.platform != "win32":
+def foreground_app(win=None) -> Foreground | None:
+    """The app in front, or None when there is none or it cannot be read.
+
+    `win` is the Win32 layer (tests pass a fake): foreground_window(),
+    class_name(hwnd), title(hwnd), pid(hwnd), child_pid(hwnd, pid) and
+    process(pid) -> (exe or None, package family or None)."""
+    if win is None and sys.platform != "win32":
         return None
     try:
-        return _api().foreground()
+        return _read_foreground(win or _api())
     except Exception as error:
         log.debug("Cannot read the window in front: %s", error)
         return None
+
+
+def _read_foreground(win) -> Foreground | None:
+    hwnd = win.foreground_window()
+    if not hwnd or win.class_name(hwnd) in NO_APP_CLASSES:
+        return None
+    title = win.title(hwnd)
+    pid = win.pid(hwnd)
+    exe, family = win.process(pid)
+    if exe and ntpath.basename(exe).lower() == FRAME_HOST:
+        # A Store app's window: the frame belongs to ApplicationFrameHost, the
+        # app itself owns a child window with another process id.
+        pid = win.child_pid(hwnd, pid)
+        exe, family = win.process(pid) if pid else (None, None)
+    if not exe or ntpath.basename(exe).lower() in NO_APP_EXES:
+        return None
+    return Foreground(exe, family, pid, title)
 
 
 # --- Win32 (only ever run on Windows) ------------------------------------------------
@@ -161,42 +192,29 @@ class _Win32:
         ]
         self.user32, self.kernel32 = user32, kernel32
 
-    def foreground(self) -> Foreground | None:
-        hwnd = self.user32.GetForegroundWindow()
-        if not hwnd or self._class_name(hwnd) in NO_APP_CLASSES:
-            return None
-        title = self._title(hwnd)
-        pid = self._pid(hwnd)
-        exe, family = self._process(pid)
-        if exe and ntpath.basename(exe).lower() == FRAME_HOST:
-            # A Store app's window: the frame belongs to ApplicationFrameHost, the
-            # app itself owns a child window with another process id.
-            pid = self._child_pid(hwnd, pid)
-            exe, family = self._process(pid) if pid else (None, None)
-        if not exe:
-            return None
-        return Foreground(exe, family, pid, title)
+    def foreground_window(self):
+        return self.user32.GetForegroundWindow()
 
-    def _class_name(self, hwnd) -> str:
+    def class_name(self, hwnd) -> str:
         buffer = self.ctypes.create_unicode_buffer(256)
         self.user32.GetClassNameW(hwnd, buffer, len(buffer))
         return buffer.value
 
-    def _title(self, hwnd) -> str:
+    def title(self, hwnd) -> str:
         buffer = self.ctypes.create_unicode_buffer(512)
         self.user32.GetWindowTextW(hwnd, buffer, len(buffer))
         return buffer.value
 
-    def _pid(self, hwnd) -> int:
+    def pid(self, hwnd) -> int:
         pid = self.wintypes.DWORD(0)
         self.user32.GetWindowThreadProcessId(hwnd, self.ctypes.byref(pid))
         return pid.value
 
-    def _child_pid(self, hwnd, frame_pid: int) -> int:
+    def child_pid(self, hwnd, frame_pid: int) -> int:
         found = [0]
 
         def visit(child, _param):
-            pid = self._pid(child)
+            pid = self.pid(child)
             if pid and pid != frame_pid:
                 found[0] = pid
                 return False  # stop looking
@@ -205,7 +223,7 @@ class _Win32:
         self.user32.EnumChildWindows(hwnd, self.enum_proc(visit), 0)
         return found[0]
 
-    def _process(self, pid: int) -> tuple[str | None, str | None]:
+    def process(self, pid: int) -> tuple[str | None, str | None]:
         """The program file and package family of a process (None where unreadable)."""
         if not pid:
             return None, None

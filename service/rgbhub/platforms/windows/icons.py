@@ -68,6 +68,9 @@ def _package_icon(folder: Path) -> Image.Image | None:
     candidates: list[Path] = []
     for logo in _manifest_logos(manifest):
         candidates.extend(_variants(root, logo))
+    # Only the package's own files: a manifest naming "..\\x.png" opens nothing outside.
+    inside = root.resolve()
+    candidates = [path for path in candidates if path.resolve().is_relative_to(inside)]
     best, best_area = None, 0
     for path in candidates:
         try:
