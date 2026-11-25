@@ -111,3 +111,10 @@ def test_hidraw_bus_contract(roots):
         vendor,
         lambda path: __import__("os").unlink(path),
     )
+
+
+def test_usage_of_skips_data_bytes():
+    from rgbhub.platforms.linux.hidraw import usage_of
+
+    assert usage_of(bytes.fromhex("8509061aff")) == (0xFF1A, None)
+    assert usage_of(bytes.fromhex("150506" "60ff0961")) == (0xFF60, 0x61)

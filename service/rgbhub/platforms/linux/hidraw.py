@@ -11,25 +11,26 @@ _READ_SIZE = 4096
 
 
 def usage_of(descriptor: bytes) -> tuple[int | None, int | None]:
-    """The first Usage Page and first Usage of a report descriptor (None if absent)."""
+    """The first Usage Page and first Usage of a report descriptor (None if absent).
+
+    Walks the descriptor item by item so data bytes are never read as tags.
+    """
     page = usage = None
     i = 0
     while i < len(descriptor) and (page is None or usage is None):
         prefix = descriptor[i]
-        if prefix == 0x06 and page is None and i + 2 < len(descriptor):
-            page = descriptor[i + 1] | descriptor[i + 2] << 8
-            i += 3
-        elif prefix == 0x05 and page is None and i + 1 < len(descriptor):
-            page = descriptor[i + 1]
-            i += 2
-        elif prefix == 0x09 and usage is None and i + 1 < len(descriptor):
-            usage = descriptor[i + 1]
-            i += 2
-        elif prefix == 0x0A and usage is None and i + 2 < len(descriptor):
-            usage = descriptor[i + 1] | descriptor[i + 2] << 8
-            i += 3
-        else:
-            i += 1
+        if prefix == 0xFE:  # long item: size byte, tag byte, then data
+            if i + 1 >= len(descriptor):
+                break
+            i += 3 + descriptor[i + 1]
+            continue
+        size = (0, 1, 2, 4)[prefix & 3]
+        data = int.from_bytes(descriptor[i + 1 : i + 1 + size], "little")
+        if prefix & 0xFC == 0x04 and page is None:  # Global: Usage Page
+            page = data
+        elif prefix & 0xFC == 0x08 and usage is None:  # Local: Usage
+            usage = data
+        i += 1 + size
     return page, usage
 
 
