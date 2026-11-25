@@ -13,7 +13,7 @@ import importlib
 import sys
 from pathlib import Path
 
-PLATFORMS = ("gnome", "batocera")
+PLATFORMS = ("gnome", "batocera", "windows")
 
 
 def detect() -> str:

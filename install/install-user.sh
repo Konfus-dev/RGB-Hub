@@ -58,7 +58,7 @@ if ! "$venv/bin/python" -c "import pip" 2>/dev/null; then
 fi
 # Editable install: the service runs straight from this repo, so after
 # editing the code you only need: systemctl --user restart rgbhub
-"$venv/bin/pip" install --quiet --editable "$repo/service"
+"$venv/bin/pip" install --quiet --editable "$repo/service[gnome]"
 
 echo "==> GNOME Shell extension (linked, not copied)"
 mkdir -p "$extensions"

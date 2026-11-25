@@ -8,11 +8,15 @@ version = "0.1.0"
 description = "One service for every lit device: HP OMEN 45L cooler LCD, case and RAM lights, IQUNIX MG65 keyboard"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.12"
-# Pillow and PyGObject come from the system (the venv uses --system-site-packages).
-dependencies = ["openrgb-python==0.3.8"]
+# Nothing every platform needs beyond the standard library. On Linux, Pillow and
+# PyGObject come from the system (the venv uses --system-site-packages); on
+# Windows Pillow comes from the windows extra.
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+gnome = ["openrgb-python==0.3.8"]
+windows = ["hidapi==0.14.0.post4", "pystray==0.19.5", "pillow>=11"]
 
 [tool.setuptools.packages.find]
 # rgbhub and its sub-packages (core, devices, platforms).

@@ -182,7 +182,7 @@ To run the tests:
 
 ```sh
 python3 -m venv --system-site-packages .venv
-.venv/bin/pip install -e 'service[dev]'
+.venv/bin/pip install -e 'service[dev,gnome]'
 .venv/bin/pytest service && .venv/bin/ruff check service
 ```
 

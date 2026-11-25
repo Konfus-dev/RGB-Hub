@@ -141,3 +141,44 @@ def test_thread_runtime_none_return_ends_timer():
     runtime.every(200, lambda: runtime.stop() or False)
     _run_with_watchdog(runtime)
     assert calls == [1]
+
+
+def _hidapi_setup():
+    from fake_hid_module import FakeHidModule
+
+    from rgbhub.platforms.windows.hid import HidapiBus
+
+    module = FakeHidModule()
+    match = HidMatch(0x103C, 0x84FD, 0xFF00, 1)
+    module.plug(b"\\\\?\\hid#a", 0x103C, 0x84FD, 0xFF00, 1)
+    module.plug(b"\\\\?\\hid#b", 0x103C, 0x84FD, 0x0001, 6)
+    now = [100.0]  # the port re-checks presence at most once a second
+    return module, match, HidapiBus(module, clock=lambda: now[0]), now
+
+
+def test_hidapi_bus_contract():
+    module, match, bus, now = _hidapi_setup()
+    path = bus.find(match)
+    assert path == "\\\\?\\hid#a"
+    check_hid_bus(
+        bus,
+        match,
+        path,
+        lambda p: (module.unplug(p.encode("latin-1")), now.__setitem__(0, now[0] + 2)),
+        queue_reply=lambda p, data: module.queue_reply(p.encode("latin-1"), data),
+        written=lambda p: module.written(p.encode("latin-1")),
+    )
+
+
+def test_hidapi_reconnects_after_replug():
+    module, match, bus, now = _hidapi_setup()
+    old = bus.find(match)
+    port = bus.open(old)
+    module.unplug(old.encode("latin-1"))
+    now[0] += 2
+    assert not port.alive()
+    assert bus.find(match) is None
+    module.plug(b"\\\\?\\hid#c", 0x103C, 0x84FD, 0xFF00, 1)
+    new = bus.find(match)
+    assert new == "\\\\?\\hid#c"
+    assert bus.open(new).alive()
