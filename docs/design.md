@@ -173,8 +173,8 @@ and must not be written to.
 | `0x6c` | ID 2, 1024 bytes, byte 12 = 0–100 | Brightness. |
 | `0x6e` | ID 2, 1024 bytes | One chunk of a 480x480 JPEG: total length at bytes 4–5, chunk index at 8, chunk length at 9–10, up to 1013 data bytes from 11. |
 
-The screen stores nothing; without a stream of frames it returns to the
-OMEN logo. The service re-sends the current image every 500 ms, the rate
+The screen keeps the last frame it was sent (on the 45L it does not go
+back to the OMEN logo by itself). The service re-sends the current image every 500 ms, the rate
 HP's software uses for a still picture. When the picture changes, a short
 burst of blended frames crossfades from the old one to the new
 (`devices/omen_pc/lcd_fade.py`). Confirmed on firmware V3.05.024.
@@ -461,7 +461,10 @@ shows that at once (no fades; the RAM is waited for) and keeps it where the
 hardware can: the keyboard saves it, the case board stays in direct mode
 with the colours until it loses power. Breathing that the hub draws itself
 would freeze mid-breath, so those lights are left steady instead. The LCD
-forgets its picture as soon as frames stop, so it is left alone.
+keeps the last frame it gets, so the Default's picture is sent as the last
+one. With no Default saved the hub stops with `factory_look()`: every light
+steady purple at full brightness, and the bundled `core/pictures/on-stop.jpg`
+(Spike) on the LCD.
 
 The stop paths are SIGTERM from systemd (log-out, shutdown, reboot) and the
 Batocera service's `stop`, which waits up to 10 s for the program to finish.

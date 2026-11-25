@@ -606,7 +606,7 @@ function defaultGroup() {
     const section = group('Default look',
         'Shown on every device when RGB Hub stops (shutting down, logging out, ' +
         'or the service being stopped), so whatever starts next shows it too. ' +
-        'The keyboard keeps it by itself; the cooler screen cannot keep a picture.');
+        'The keyboard keeps it by itself; the cooler screen keeps the last picture sent. With no Default saved: purple lights and Spike on the screen.');
     const saveButton = element('button', {className: 'action', type: 'button',
         textContent: 'Save'});
     saveButton.addEventListener('click', () => askHub('save'));

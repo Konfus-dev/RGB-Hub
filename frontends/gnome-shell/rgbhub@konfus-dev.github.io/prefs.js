@@ -596,7 +596,7 @@ function buildDefaultGroup(settings, window) {
         title: 'Default look',
         description: 'Shown on every device when RGB Hub stops (shutting down, logging out, ' +
             'or the service being stopped), so whatever starts next shows it too. ' +
-            'The keyboard keeps it by itself; the cooler screen cannot keep a picture.',
+            'The keyboard keeps it by itself; the cooler screen keeps the last picture sent. With no Default saved: purple lights and Spike on the screen.',
     });
     const saveRow = new Adw.ActionRow({
         title: 'Save current look as Default',
