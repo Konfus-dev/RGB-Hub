@@ -24,6 +24,7 @@ LIGHTS_DEBOUNCE_MS = 40
 ANIMATION_INTERVAL_MS = 33  # about 30 frames a second while an effect is animated
 SLEEP_WAIT_S = 3.0  # how long to wait for the RAM to go dark before sleeping
 STOP_WAIT_S = 5.0  # how long to wait for the Default to reach the RAM when stopping
+STEADY_MODE = "Static"  # what auto mode's colour is shown with on a colourless effect
 
 LIGHT_KEYS = (
     "device-enabled",
@@ -158,13 +159,26 @@ class LightGroup:
             for name in {*speeds, *dimmest, *brightest}
         }
         auto = self._auto_colour()
+        modes = hub.get("device-modes")
         return (
             bool(hub.get("device-enabled").get(self._id, True)) and not hub.asleep,
             int(hub.get("device-brightness").get(self._id, 100)),
-            hub.get("device-modes"),
+            self._showing_colour(modes) if auto else modes,
             UniformColours(auto) if auto else hub.get("zone-colours"),
             options,
         )
+
+    def _showing_colour(self, modes: dict) -> dict:
+        """Auto mode shows a colour, so an effect that ignores colours would
+        hide it: such a device (the RAM, whose own default is Rainbow) shows
+        the colour steady instead. Effects that use the colour are kept."""
+        result = dict(modes)
+        for lights in self._lights:
+            for device in lights.devices():
+                mode = result.get(device.name, device.default_mode)
+                if mode in device.colourless_modes and STEADY_MODE in device.modes:
+                    result[device.name] = STEADY_MODE
+        return result
 
     # --- fades and breathing ----------------------------------------------------
 
