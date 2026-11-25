@@ -39,6 +39,8 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=install/never-backwards.sh
+source "$repo/install/never-backwards.sh"
 uuid="rgbhub@konfus-dev.github.io"
 root="$HOME/.local/share/rgbhub"
 current="$root/current"           # -> versions/<commit>, or the working copy (--dev)
@@ -76,23 +78,31 @@ if [[ $mode == release ]]; then
         echo "ERROR: $repo has no 'main' branch to install from." >&2
         exit 1
     fi
-    echo "==> Installing main (${sha:0:7}) into $root/versions"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    top="rgbhub-$sha"
-    git -C "$repo" archive --format=zip --prefix="$top/" -o "$tmp/rgbhub.zip" "$sha"
-    # The snapshot installs itself (its own code, run from inside the zip): it
-    # unpacks into versions/<commit>, makes its Python environment (with
-    # Ubuntu's own Pillow and GTK bindings), checks it, points `current` at it
-    # and records it for the updater.
-    boot='import sys; sys.path.insert(0, sys.argv.pop(1)); from rgbhub.updater.install import main; sys.exit(main(sys.argv[1:]))'
-    was_dev=; [[ -e "$root/dev" ]] && was_dev=1
-    rm -f "$root/dev"
-    if ! python3 -I -c "$boot" "$tmp/rgbhub.zip/$top/service" --platform gnome \
-        --root "$root" --zip "$tmp/rgbhub.zip" --sha "$sha"; then
-        [[ -n $was_dev ]] && touch "$root/dev"
-        echo "ERROR: could not install main (${sha:0:7}); nothing was switched." >&2
-        exit 1
+    installed=
+    if [[ -L $current && ! -e $root/dev ]]; then
+        installed="$(basename "$(readlink -f "$current")")"
+    fi
+    if behind_installed "$repo" "$installed" "$sha"; then
+        :  # keep what is installed
+    else
+        echo "==> Installing main (${sha:0:7}) into $root/versions"
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        top="rgbhub-$sha"
+        git -C "$repo" archive --format=zip --prefix="$top/" -o "$tmp/rgbhub.zip" "$sha"
+        # The snapshot installs itself (its own code, run from inside the zip): it
+        # unpacks into versions/<commit>, makes its Python environment (with
+        # Ubuntu's own Pillow and GTK bindings), checks it, points `current` at it
+        # and records it for the updater.
+        boot='import sys; sys.path.insert(0, sys.argv.pop(1)); from rgbhub.updater.install import main; sys.exit(main(sys.argv[1:]))'
+        was_dev=; [[ -e "$root/dev" ]] && was_dev=1
+        rm -f "$root/dev"
+        if ! python3 -I -c "$boot" "$tmp/rgbhub.zip/$top/service" --platform gnome \
+            --root "$root" --zip "$tmp/rgbhub.zip" --sha "$sha"; then
+            [[ -n $was_dev ]] && touch "$root/dev"
+            echo "ERROR: could not install main (${sha:0:7}); nothing was switched." >&2
+            exit 1
+        fi
     fi
 else
     echo "==> Running from the working copy $repo (updates paused)"

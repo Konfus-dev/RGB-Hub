@@ -54,7 +54,7 @@ ASLEEP_MARKER = Path("/var/run/rgb-hub/asleep")  # the suspend script waits for 
 OS_LOGO = Path("/usr/share/batocera/splash/boot-logo.png")
 ACPI_CALL = Path("/proc/acpi/call")
 # The helper sits beside the "service" folder, in the repo and on the drive.
-RAM_HELPER = Path(__file__).resolve().parents[3] / "helper" / "rgbhub_ram_helper.py"
+RAM_HELPER = Path(__file__).resolve().parents[4] / "helper" / "rgbhub_ram_helper.py"
 
 DEFAULTS = {
     # On a games machine, following the game is the point: on unless switched off.

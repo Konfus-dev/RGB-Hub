@@ -33,3 +33,23 @@ def test_core_never_imports_devices_or_platforms(path):
                 (parts and parts[0] in FORBIDDEN) or (not parts and set(names) & set(FORBIDDEN))
             )
         assert not bad, f"{path.name} imports {'.' * level}{module} {names}"
+
+
+def test_repo_root_lookups_resolve():
+    """Every `parents[N]` repo-root lookup in rgbhub must land on a real folder
+    (the Batocera RAM helper once pointed one level too high after a move)."""
+    import re
+    from pathlib import Path
+
+    from rgbhub.platforms import batocera
+
+    repo = Path(__file__).resolve().parents[2]
+    assert batocera.RAM_HELPER.exists()
+    assert batocera.RAM_HELPER == repo / "helper" / "rgbhub_ram_helper.py"
+    pattern = re.compile(r"Path\(__file__\)\.resolve\(\)\.parents\[(\d+)\]\s*/\s*\"([^\"]+)\"")
+    found = 0
+    for source in sorted((repo / "service" / "rgbhub").rglob("*.py")):
+        for number, text in pattern.findall(source.read_text(encoding="utf-8")):
+            found += 1
+            assert (source.parents[int(number)] / text).exists(), (source, number, text)
+    assert found >= 3

@@ -8,6 +8,7 @@ and HTTP requests go to fakes."""
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -445,14 +446,59 @@ def test_windows_layout_restart_and_health(tmp_path):
     assert not lay3.hub_healthy(0)
 
 
-def test_windows_layout_restart_without_the_hub_uses_the_task(tmp_path):
+def test_windows_layout_restart_without_the_hub_leaves_a_quit_hub_alone(tmp_path):
+    """No runtime.json and nothing to ask: the owner quit the hub. Do not start it,
+    and do not count that against the new version."""
     run = FakeRun()
     lay = layout(tmp_path, run=run, urlopen=FakeHub(error=OSError("refused")))
-    lay.restart_hub()  # no runtime.json: the hub isn't running
-    assert run.calls == [
-        ["schtasks", "/End", "/TN", "RGB-Hub"],
-        ["schtasks", "/Run", "/TN", "RGB-Hub"],
-    ]
+    lay.restart_hub()
+    assert run.calls == []
+    assert lay.hub_healthy(0)
+    assert not (lay.root / "updater" / "run.py").exists()  # not seen working: no new updater
+
+
+def test_windows_layout_restart_by_task_waits_for_the_old_hub_to_go(tmp_path):
+    run = FakeRun()
+    alive = {100: 3}  # still running for three checks after the task is ended
+
+    def pid_alive(pid):
+        alive[pid] -= 1
+        return alive[pid] >= 0
+
+    sleeps = []
+    lay = layout(
+        tmp_path,
+        run=run,
+        urlopen=FakeHub(error=OSError("refused")),
+        pid_alive=pid_alive,
+        sleep=sleeps.append,
+    )
+    write_runtime(lay.data, pid=100)
+    lay.restart_hub()
+    assert [c[:2] for c in run.calls] == [["schtasks", "/End"], ["schtasks", "/Run"]]
+    assert sleeps  # it waited for the process to end
+    assert not any("taskkill" in c[0].lower() for c in run.calls)
+
+
+def test_windows_layout_restart_by_task_kills_a_hub_that_will_not_go(tmp_path, monkeypatch):
+    monkeypatch.setenv("SystemRoot", "C:\\Windows")
+    run = FakeRun()
+    sleeps = []
+    lay = layout(
+        tmp_path,
+        run=run,
+        urlopen=FakeHub(error=OSError("refused")),
+        pid_alive=lambda pid: True,
+        sleep=sleeps.append,
+    )
+    write_runtime(lay.data, pid=100)
+    lay.restart_hub()
+    assert [c[0] for c in run.calls][0] == "schtasks"
+    kill = run.calls[1]
+    assert kill[0].lower().endswith("taskkill.exe") and "System32" in kill[0]
+    assert kill[1:] == ["/PID", "100", "/T", "/F"]
+    assert run.calls[2] == ["schtasks", "/Run", "/TN", "RGB-Hub"]
+    assert 15 <= sum(sleeps) <= 25
 
 
 def test_windows_layout_notify_through_the_hub_else_log(tmp_path, caplog):
@@ -896,3 +942,26 @@ exit 3
     assert "umount /fake/mnt" in lines
     assert "rm -rf /fake/tmp" in lines
     assert lines.index("mount -o remount,ro /fake/mnt") < lines.index("umount /fake/mnt")
+
+
+def test_install_from_ubuntu_ignores_a_lock_left_by_windows(tmp_path):
+    """A pid in Windows' update.lock means nothing on Ubuntu (it may even be a live
+    Linux process): with foreign_lock the install is not blocked; without it, it is."""
+    source = make_version(tmp_path / "src", A)
+    zip_path = tmp_path / "rgbhub.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for path in source.rglob("*"):
+            if path.is_file():
+                zf.write(path, f"rgbhub-{A}/{path.relative_to(source)}")
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    root = tmp_path / "Local" / "Programs" / "RGB-Hub"
+    root.mkdir(parents=True)
+    (root / "update.lock").write_text(str(os.getpid()))  # a pid that is alive here
+    lay = WindowsLayout(root, wheels=wheels, run=FakeRun(returncode=1))
+    with pytest.raises(UpdateError, match="running"):
+        install_mod.install(Store(root), lay, zip_path, A, "windows", check=False)
+    install_mod.install(Store(root), lay, zip_path, A, "windows", check=False, foreign_lock=True)
+    assert (root / "current.txt").read_text() == A + "\n"
+    assert not (root / "update.lock").exists()
+    assert "foreign_lock=True" in (INSTALL / "install-windows.sh").read_text()

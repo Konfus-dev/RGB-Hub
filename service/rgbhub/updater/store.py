@@ -146,15 +146,19 @@ class Store:
     # ---- one run at a time ----------------------------------------------------
 
     @contextmanager
-    def locked(self):
+    def locked(self, foreign: bool = False):
         """Yield True while holding `update.lock`, False if another run holds it.
+
+        `foreign`: the lock may be one Windows left and this runs on Ubuntu with
+        Windows switched off, so its pid means nothing here and any lock is stale.
 
         The lock holds the owner's pid. It is stale when that process is gone
         (POSIX) or, on Windows where that is awkward to check without extra
         modules, when it is older than two hours."""
         lock = self.root / "update.lock"
         self.root.mkdir(parents=True, exist_ok=True)
-        got = self._try_lock(lock) or (self._lock_is_stale(lock) and self._retake(lock))
+        stale = foreign or self._lock_is_stale(lock)
+        got = self._try_lock(lock) or (stale and self._retake(lock))
         try:
             yield got
         finally:

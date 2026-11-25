@@ -18,6 +18,8 @@ if [[ -z "$share" || ! -d "$share/system" ]]; then
 fi
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=install/never-backwards.sh
+source "$repo/install/never-backwards.sh"
 app="$share/system/rgb-hub"
 
 # Puts a `service` folder on Python's path and runs the updater's installer
@@ -37,13 +39,17 @@ if [[ -e "$repo/.git" ]]; then
         echo "ERROR: no 'main' branch to install from in $repo (or git is missing)." >&2
         exit 1
     fi
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    top="rgb-hub-$sha"
-    git_ archive --format=zip --prefix="$top/" -o "$tmp/rgb-hub.zip" "$sha"
-    # The snapshot installs itself (its own code, run from inside the zip).
-    python3 -I -c "$boot" "$tmp/rgb-hub.zip/$top/service" --platform batocera \
-        --root "$app" --zip "$tmp/rgb-hub.zip" --sha "$sha" --no-check
+    installed="$(head -c 64 "$app/current.txt" 2>/dev/null | tr -d '\r\n ')" || installed=
+    if [[ -n $installed && ! -d $app/versions/$installed ]]; then installed=; fi
+    if ! behind_installed "$repo" "$installed" "$sha"; then
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        top="rgb-hub-$sha"
+        git_ archive --format=zip --prefix="$top/" -o "$tmp/rgb-hub.zip" "$sha"
+        # The snapshot installs itself (its own code, run from inside the zip).
+        python3 -I -c "$boot" "$tmp/rgb-hub.zip/$top/service" --platform batocera \
+            --root "$app" --zip "$tmp/rgb-hub.zip" --sha "$sha" --no-check
+    fi
 else
     # A downloaded copy without git history cannot tell which commit it is,
     # and a version without one could never be updated. Install the newest

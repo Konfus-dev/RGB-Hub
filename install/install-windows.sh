@@ -328,7 +328,8 @@ if [[ -z $windows_ahead ]]; then
     # The snapshot installs itself with the updater's own code (as install-user.sh
     # does on Ubuntu): versions\<commit>\ with the wheels unpacked into its
     # site-packages, the updater's copy, current.txt and the update state. Its
-    # self-check needs Windows, so it runs at the first update instead.
+    # self-check needs Windows, so it runs at the first update instead. A leftover
+    # update.lock from Windows is ignored (its pid is Windows'; Windows is off).
     boot='
 import sys
 from pathlib import Path
@@ -339,7 +340,7 @@ from rgbhub.updater.layouts.windows import WindowsLayout
 from rgbhub.updater.store import Store
 root, wheels, zip_path, sha = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]), sys.argv[5]
 try:
-    install(Store(root), WindowsLayout(root, wheels=wheels), zip_path, sha, "windows", check=False)
+    install(Store(root), WindowsLayout(root, wheels=wheels), zip_path, sha, "windows", check=False, foreign_lock=True)
 except (UpdateError, OSError) as e:
     sys.exit(f"ERROR: could not install RGB-Hub {sha[:7]}: {e}")
 '

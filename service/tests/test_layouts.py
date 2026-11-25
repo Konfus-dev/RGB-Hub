@@ -716,3 +716,78 @@ def test_install_batocera_script_without_git_and_offline_fails_clearly(tmp_path)
     assert not (app / "current.txt").exists()
     assert not (app / "versions").exists()
     assert not (share / "system/services/rgb_hub").exists()
+
+
+def _git(repo: Path, *args: str) -> str:
+    cmd = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    done = subprocess.run([*cmd, *args], capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+def _behind(repo: Path, installed: str, main: str) -> subprocess.CompletedProcess:
+    script = f'source "{REPO}/install/never-backwards.sh"; behind_installed "$@"'
+    return subprocess.run(
+        ["bash", "-c", script, "x", str(repo), installed, main], capture_output=True, text=True
+    )
+
+
+def test_never_backwards_helper(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a").write_text("1")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "one", "--no-gpg-sign")
+    one = _git(repo, "rev-parse", "HEAD")
+    (repo / "a").write_text("2")
+    _git(repo, "commit", "-q", "-am", "two", "--no-gpg-sign")
+    two = _git(repo, "rev-parse", "HEAD")
+    assert _behind(repo, "", two).returncode == 1  # nothing installed: install
+    assert _behind(repo, one, two).returncode == 1  # older installed: moving forward
+    assert _behind(repo, two, two).returncode == 1  # the same: nothing to protect
+    assert _behind(repo, "unversioned", two).returncode == 1  # not a commit id
+    ahead = _behind(repo, two, one)  # installed is newer than main
+    assert ahead.returncode == 0 and "no going back" in ahead.stdout
+    unknown = _behind(repo, "f" * 40, two)  # a commit this checkout never heard of
+    assert unknown.returncode == 0 and "fffffff" in unknown.stdout
+
+
+def test_install_scripts_never_move_backwards():
+    for name, guard in (
+        ("install-user.sh", 'behind_installed "$repo" "$installed" "$sha"'),
+        ("install-batocera.sh", 'behind_installed "$repo" "$installed" "$sha"'),
+    ):
+        text = (REPO / "install" / name).read_text()
+        assert 'source "$repo/install/never-backwards.sh"' in text
+        assert guard in text
+    subprocess.run(["bash", "-n", str(REPO / "install/never-backwards.sh")], check=True)
+
+
+def test_install_batocera_keeps_a_version_that_main_does_not_contain(tmp_path):
+    if (
+        shutil.which("git") is None
+        or subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "--verify", "HEAD"], capture_output=True
+        ).returncode
+    ):
+        pytest.skip("needs a git checkout")
+    repo = tmp_path / "repo"
+    head = _commit_copy_of_this_checkout(repo)
+    share = tmp_path / "share"
+    app = share / "system/rgb-hub"
+    (share / "system").mkdir(parents=True)
+    run = ["bash", str(repo / "install/install-batocera.sh"), str(share)]
+    first = subprocess.run(run, capture_output=True, text=True)
+    assert first.returncode == 0, first.stdout + first.stderr
+    # The updater took a newer commit; local main is rewound to something unrelated.
+    _git(repo, "checkout", "-q", "--orphan", "rewound")
+    (repo / "marker.txt").write_text("x")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "unrelated", "--no-gpg-sign")
+    _git(repo, "branch", "-M", "main")
+    assert _git(repo, "rev-parse", "main") != head
+    done = subprocess.run(run, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "no going back" in done.stdout
+    assert (app / "current.txt").read_text().strip() == head
+    assert sorted(p.name for p in (app / "versions").iterdir()) == [head]

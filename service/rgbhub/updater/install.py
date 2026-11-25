@@ -36,10 +36,17 @@ log = logging.getLogger("rgbhub.updater")
 
 
 def install(
-    store: Store, layout, zip_path: Path, sha: str, platform: str, check: bool = True
+    store: Store,
+    layout,
+    zip_path: Path,
+    sha: str,
+    platform: str,
+    check: bool = True,
+    foreign_lock: bool = False,
 ) -> None:
-    """Raises UpdateError if anything fails; the active version is then unchanged."""
-    with store.locked() as got:
+    """Raises UpdateError if anything fails; the active version is then unchanged.
+    `foreign_lock`: installing Windows' folder from Ubuntu, where a lock's pid is Windows'."""
+    with store.locked(foreign=foreign_lock) as got:
         if not got:
             raise UpdateError("an update is running right now; try again in a minute")
         store.clean_partials()

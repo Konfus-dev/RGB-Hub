@@ -38,6 +38,10 @@ FORBIDDEN = [
     (r"\bi2c-tools\b", "i2c-tools"),
     # Windows: the port-access drivers that SMBus tools (OpenRGB among them) use.
     (r"(?i)\bwinring0|\binpout", "raw port access on Windows"),
+    # PowerShell that compiles C# or imports DLL functions can call any driver,
+    # so none is allowed anywhere (the RAM helper's WMI call needs neither).
+    (r"(?i)\bAdd-Type\b", "PowerShell compiling C# (Add-Type)"),
+    (r"(?i)\bDllImport\b", "PowerShell / C# importing DLL functions (DllImport)"),
 ]
 
 # ctypes reaches any C function, so it is allowed only where Windows' own desktop
@@ -426,3 +430,23 @@ def test_setup_installs_the_lock_and_takes_back_earlier_access():
     assert '71-rgbhub-ram-bus-lock.rules" /etc/udev/rules.d/' in setup
     assert "udevadm trigger --subsystem-match=i2c-dev" in setup
     assert "setfacl -b" in setup
+
+
+def test_the_powershell_checks_see_what_they_forbid():
+    patterns = dict((why, re.compile(p)) for p, why in FORBIDDEN)
+    add_type = patterns["PowerShell compiling C# (Add-Type)"]
+    dll_import = patterns["PowerShell / C# importing DLL functions (DllImport)"]
+    for line in (
+        "Add-Type -TypeDefinition $code",
+        "add-type -AssemblyName System.Windows.Forms",
+        'command = "Add-Type -Name X; ..."',
+    ):
+        assert add_type.search(line), line
+    for line in ('[DllImport("inpoutx64.dll")]', "[dllimport('kernel32')] public static"):
+        assert dll_import.search(line), line
+    assert not add_type.search("Get-CimInstance Win32_ComputerSystem")
+    assert not dll_import.search("ctypes.WinDLL")
+    # ...and the scan reads the PowerShell files and Python files that feed PowerShell.
+    names = {name for name, _ in FILES}
+    assert "install/windows/finish-setup.ps1" in names
+    assert "helper/rgbhub_ram_helper_windows.py" in names

@@ -41,6 +41,7 @@ log = logging.getLogger("rgbhub.updater")
 
 TASK = "RGB-Hub"  # the scheduled task that runs launcher.py at sign-in
 CREATE_NO_WINDOW = 0x08000000  # no console window flashing up from pythonw.exe
+OLD_EXIT_WAIT_S = 20  # how long the old hub gets to end after its task is ended
 NEW_START_WAIT_S = 60  # how long the launcher may take to start the new hub
 HTTP_TIMEOUT_S = 10
 # What finish-setup.ps1 installs into Program Files: (folder in a version, files).
@@ -166,6 +167,7 @@ class WindowsLayout:
         self._urlopen = urlopen or _urlopen
         self._pid_alive = pid_alive
         self._started_before: float | None = None
+        self._left_quit = False
         self._activated: Path | None = None
 
     # ---- helpers --------------------------------------------------------------
@@ -300,15 +302,36 @@ class WindowsLayout:
         names); if it cannot be reached, restart the scheduled task."""
         info = self._hub()
         self._started_before = info["started"] if info else None
+        self._left_quit = False
         if self._post("/api/restart", None):
+            return
+        if info is None:
+            # No runtime.json: the owner quit the hub. Not ours to start again.
+            log.info("the hub is not running (the owner quit it); not starting it")
+            self._left_quit = True
             return
         log.info("the hub did not answer; restarting the %r task", TASK)
         self._run(["schtasks", "/End", "/TN", TASK])
+        self._end_old_hub(info["pid"])
         self._check(["schtasks", "/Run", "/TN", TASK], "starting the hub")
+
+    def _end_old_hub(self, pid: int) -> None:
+        """Make sure process `pid` is gone before the task is run again (two hubs
+        would fight over the lights): wait for it, then force it."""
+        for _ in range(OLD_EXIT_WAIT_S):
+            if not self._pid_alive(pid):
+                return
+            self._sleep(1)
+        if self._pid_alive(pid):
+            log.info("the old hub (pid %s) did not end; stopping it", pid)
+            system = Path(os.environ.get("SystemRoot") or "C:\\Windows")
+            self._run([str(system / "System32" / "taskkill.exe"), "/PID", str(pid), "/T", "/F"])
 
     def hub_healthy(self, wait_s: int) -> bool:
         """A new hub started (runtime.json's `started` changed) and is the same,
-        running one `wait_s` later."""
+        running one `wait_s` later. (A hub the owner had quit stays quit: nothing to check.)"""
+        if self._left_quit:
+            return True
         for _ in range(NEW_START_WAIT_S):
             info = self._hub()
             if (
