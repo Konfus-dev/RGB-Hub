@@ -265,6 +265,119 @@ def test_state_from_store_when_layout_does_not_know(store):
     assert update_once(FakeGitHub(), store, layout, 0) == "updated"
 
 
+def test_self_check_failure_deletes_folder(store):
+    layout = FakeLayout(check_ok=False)
+    update_once(FakeGitHub(), store, layout, 0)
+    assert not store.version_dir(NEW).exists()
+
+
+def test_unhealthy_rollback_deletes_failed_folder_and_clears_pending(store):
+    update_once(FakeGitHub(), store, FakeLayout(healthy=False), 0)
+    assert not store.version_dir(NEW).exists()
+    assert store.version_dir(OLD).is_dir()
+    assert store.load()["pending"] is None
+    assert store.load()["current"] == OLD
+
+
+def test_missing_old_folder_means_no_update(tmp_path):
+    s = Store(tmp_path / "root")  # OLD is installed but has no folder to go back to
+    gh, layout = FakeGitHub(), FakeLayout()
+    assert update_once(gh, s, layout, 0) == "failed"
+    assert layout.activated == [] and gh.downloads == []
+
+
+def test_rollback_raising_still_notifies(store, caplog):
+    class Stuck(FakeLayout):
+        def activate(self, version):
+            if version.name == OLD:
+                raise OSError("disk gone")
+            super().activate(version)
+
+    layout = Stuck(healthy=False)
+    with caplog.at_level(logging.WARNING, logger="rgbhub.updater"):
+        assert update_once(FakeGitHub(), store, layout, 0) == "failed"
+    assert len(layout.notes) == 1 and NEW[:7] in layout.notes[0]
+    assert "disk gone" in caplog.text
+    assert NEW in store.load()["bad"]
+    assert store.version_dir(NEW).is_dir()  # may still be the active one: kept
+    assert store.load()["pending"] == {"sha": NEW, "from": OLD}
+    # next run tries going back again
+    layout.activate = FakeLayout.activate.__get__(layout)
+    assert update_once(FakeGitHub(), store, layout, 0) == "rolled-back"
+    assert layout.current == OLD and not store.version_dir(NEW).exists()
+
+
+def test_died_between_activate_and_health_check_rolls_back(store):
+    store.version_dir(NEW).mkdir(parents=True)
+    store.save({**store.load(), "current": OLD, "pending": {"sha": NEW, "from": OLD}})
+    gh, layout = FakeGitHub(latest=NEW), FakeLayout(current=NEW)
+    assert update_once(gh, store, layout, 0) == "rolled-back"
+    assert layout.activated == [OLD]
+    assert ("restart",) in layout.calls
+    state = store.load()
+    assert NEW in state["bad"] and state["pending"] is None and state["current"] == OLD
+    assert not store.version_dir(NEW).exists()
+    assert layout.notes == [f"RGB-Hub update {NEW[:7]} didn't start; went back to {OLD[:7]}"]
+    # and the next run leaves it alone until main moves on
+    assert update_once(gh, store, layout, 0) == "bad-commit"
+
+
+def test_pending_that_never_activated_is_cleared(store):
+    store.save({**store.load(), "current": OLD, "pending": {"sha": NEW, "from": OLD}})
+    layout = FakeLayout(current=OLD)
+    assert update_once(FakeGitHub(latest=OLD), store, layout, 0) == "up-to-date"
+    assert store.load()["pending"] is None and store.load()["bad"] == []
+    assert layout.activated == []
+
+
+def test_bad_installed_commit_rolls_back_at_start(store):
+    store.version_dir(NEW).mkdir(parents=True)
+    store.save({**store.load(), "current": NEW, "previous": OLD, "bad": [NEW]})
+    layout = FakeLayout(current=NEW)
+    assert update_once(FakeGitHub(latest=NEW), store, layout, 0) == "rolled-back"
+    assert layout.activated == [OLD]
+    assert store.load()["current"] == OLD
+
+
+def test_bad_installed_without_previous_folder_carries_on(store):
+    store.save({**store.load(), "current": NEW, "previous": NEWER, "bad": [NEW]})
+    layout = FakeLayout(current=NEW)
+    assert update_once(FakeGitHub(latest=NEW), store, layout, 0) == "up-to-date"
+    assert layout.activated == []
+
+
+def test_overlapping_run_is_busy(store):
+    store.root.mkdir(parents=True, exist_ok=True)
+    (store.root / "update.lock").write_text(str(os.getpid()))
+    partial = store.versions / f".{NEW}.partial"
+    partial.mkdir(parents=True)
+    gh, layout = FakeGitHub(), FakeLayout()
+    assert update_once(gh, store, layout, 0) == "busy"
+    assert partial.exists() and gh.downloads == []
+    assert (store.root / "update.lock").exists()
+
+
+def test_stale_lock_from_dead_pid_is_taken(store, monkeypatch):
+    import rgbhub.updater.store as store_mod
+
+    monkeypatch.setattr(store_mod, "_IS_WINDOWS", False)
+    (store.root / "update.lock").write_text("999999999")
+    assert update_once(FakeGitHub(), store, FakeLayout(), 0) == "updated"
+    assert not (store.root / "update.lock").exists()
+
+
+def test_windows_lock_goes_stale_after_two_hours(store, monkeypatch):
+    import rgbhub.updater.store as store_mod
+
+    monkeypatch.setattr(store_mod, "_IS_WINDOWS", True)
+    lock = store.root / "update.lock"
+    lock.write_text(str(os.getpid()))
+    assert update_once(FakeGitHub(), store, FakeLayout(), 0) == "busy"
+    old = lock.stat().st_mtime - 3 * 3600
+    os.utime(lock, (old, old))
+    assert update_once(FakeGitHub(), store, FakeLayout(), 0) == "updated"
+
+
 # ---- store --------------------------------------------------------------
 
 
@@ -285,7 +398,13 @@ def test_prune_keeps_current_and_previous(tmp_path):
 def test_state_write_is_atomic_and_tolerates_garbage(tmp_path):
     s = Store(tmp_path)
     s.state_path.write_text("{not json")
-    assert s.load() == {"current": None, "previous": None, "bad": [], "checked": None}
+    assert s.load() == {
+        "current": None,
+        "previous": None,
+        "bad": [],
+        "checked": None,
+        "pending": None,
+    }
     s.mark_bad(NEW)
     assert json.loads(s.state_path.read_text())["bad"] == [NEW]
     assert [p.name for p in tmp_path.iterdir()] == ["update-state.json"]
@@ -394,6 +513,27 @@ def test_github_download_error_leaves_no_file(tmp_path):
     with pytest.raises(UpdateError):
         GitHub(opener=lambda req, timeout: Dies()).download(NEW, dest)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_json_answer_capped(monkeypatch):
+    import rgbhub.updater.github as gh_mod
+
+    monkeypatch.setattr(gh_mod, "MAX_JSON_BYTES", 100)
+    body = json.dumps({"sha": NEW, "pad": "x" * 200}).encode()
+    with pytest.raises(UpdateError):
+        GitHub(opener=Recorder(body)).latest()
+
+
+def test_download_capped(monkeypatch, tmp_path):
+    import rgbhub.updater.github as gh_mod
+
+    monkeypatch.setattr(gh_mod, "MAX_DOWNLOAD_BYTES", 1000)
+    dest = tmp_path / f"{NEW}.zip"
+    with pytest.raises(UpdateError):
+        GitHub(opener=Recorder(b"z" * 1001)).download(NEW, dest)
+    assert list(tmp_path.iterdir()) == []
+    GitHub(opener=Recorder(b"z" * 1000)).download(NEW, dest)
+    assert dest.stat().st_size == 1000
 
 
 # ---- command line -------------------------------------------------------

@@ -11,7 +11,9 @@ import logging
 import os
 import shutil
 import stat
+import time
 import zipfile
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,10 +23,13 @@ log = logging.getLogger("rgbhub.updater")
 
 MAX_UNPACKED_BYTES = 500 * 1024 * 1024  # the repo is a few MB; refuse zip bombs
 MAX_BAD = 50
+LOCK_STALE_S = 2 * 3600  # Windows: a lock this old is left over from a crash
+_IS_WINDOWS = os.name == "nt"
 
 
 def _empty_state() -> dict:
-    return {"current": None, "previous": None, "bad": [], "checked": None}
+    # pending: {"sha", "from"} while a new version is active but not yet seen healthy.
+    return {"current": None, "previous": None, "bad": [], "checked": None, "pending": None}
 
 
 def _remove(path: Path) -> None:
@@ -79,6 +84,9 @@ class Store:
             state["bad"] = [s for s in data["bad"] if is_sha(s)]
         if isinstance(data.get("checked"), str):
             state["checked"] = data["checked"]
+        pending = data.get("pending")
+        if isinstance(pending, dict) and is_sha(pending.get("sha")) and is_sha(pending.get("from")):
+            state["pending"] = {"sha": pending["sha"], "from": pending["from"]}
         return state
 
     def save(self, state: dict) -> None:
@@ -103,10 +111,23 @@ class Store:
             state["bad"] = (state["bad"] + [sha])[-MAX_BAD:]
         self.save(state)
 
+    def set_pending(self, sha: str, from_sha: str) -> None:
+        """Record that `sha` is about to be activated and has not passed its health check."""
+        state = self.load()
+        state["pending"] = {"sha": check_sha(sha), "from": check_sha(from_sha)}
+        self.save(state)
+
+    def clear_pending(self) -> None:
+        state = self.load()
+        if state["pending"] is not None:
+            state["pending"] = None
+            self.save(state)
+
     def set_current(self, sha: str, previous: str | None) -> None:
         state = self.load()
         state["current"] = check_sha(sha)
         state["previous"] = previous if is_sha(previous) else None
+        state["pending"] = None
         state["checked"] = datetime.now(UTC).isoformat(timespec="seconds")
         self.save(state)
 
@@ -114,6 +135,65 @@ class Store:
 
     def version_dir(self, sha: str) -> Path:
         return self.versions / check_sha(sha)
+
+    def remove_version(self, sha: str) -> None:
+        """Delete a version folder (a failed one); logged, never raises."""
+        path = self.version_dir(sha)
+        if path.exists():
+            log.info("removing failed version %s", sha[:7])
+            _remove(path)
+
+    # ---- one run at a time ----------------------------------------------------
+
+    @contextmanager
+    def locked(self):
+        """Yield True while holding `update.lock`, False if another run holds it.
+
+        The lock holds the owner's pid. It is stale when that process is gone
+        (POSIX) or, on Windows where that is awkward to check without extra
+        modules, when it is older than two hours."""
+        lock = self.root / "update.lock"
+        self.root.mkdir(parents=True, exist_ok=True)
+        got = self._try_lock(lock) or (self._lock_is_stale(lock) and self._retake(lock))
+        try:
+            yield got
+        finally:
+            if got:
+                lock.unlink(missing_ok=True)
+
+    @staticmethod
+    def _try_lock(lock: Path) -> bool:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            return False
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+
+    def _retake(self, lock: Path) -> bool:
+        log.info("removing stale %s", lock.name)
+        lock.unlink(missing_ok=True)
+        return self._try_lock(lock)
+
+    @staticmethod
+    def _lock_is_stale(lock: Path) -> bool:
+        try:
+            age = time.time() - lock.stat().st_mtime
+            text = lock.read_text(encoding="ascii", errors="replace").strip()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if _IS_WINDOWS or not text.isdigit():
+            return age > LOCK_STALE_S
+        try:
+            os.kill(int(text), 0)
+        except (ProcessLookupError, OverflowError):
+            return True  # no such process (or not a possible pid)
+        except PermissionError:
+            return False  # alive, owned by someone else
+        return False
 
     def zip_path(self, sha: str) -> Path:
         return self.downloads / f"{check_sha(sha)}.zip"

@@ -5,7 +5,6 @@ import http.client
 import json
 import os
 import re
-import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +17,9 @@ API = "https://api.github.com"
 CODELOAD = "https://codeload.github.com"
 USER_AGENT = "rgbhub-updater"
 TIMEOUT_S = 30
+MAX_JSON_BYTES = 1024 * 1024  # GitHub's answers here are a few kB
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024  # the repo zip is a few MB
+_CHUNK = 64 * 1024
 _REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
@@ -43,7 +45,10 @@ class GitHub:
         response = self._open(url, "application/vnd.github+json")
         try:
             with response:
-                data = json.load(response)
+                raw = response.read(MAX_JSON_BYTES + 1)
+            if len(raw) > MAX_JSON_BYTES:
+                raise UpdateError(f"answer from GitHub too big for {url}")
+            data = json.loads(raw)
         except (OSError, ValueError, http.client.HTTPException) as e:
             raise UpdateError(f"bad answer from GitHub for {url}: {e}") from e
         if not isinstance(data, dict):
@@ -79,7 +84,12 @@ class GitHub:
         url = f"{CODELOAD}/{self.repo}/zip/{sha}"
         try:
             with self._open(url, "application/zip") as response, open(part, "wb") as out:
-                shutil.copyfileobj(response, out)
+                size = 0
+                while chunk := response.read(_CHUNK):
+                    size += len(chunk)
+                    if size > MAX_DOWNLOAD_BYTES:
+                        raise UpdateError(f"download of {sha[:7]} is too big")
+                    out.write(chunk)
             os.replace(part, dest)
         except UpdateError:
             part.unlink(missing_ok=True)
