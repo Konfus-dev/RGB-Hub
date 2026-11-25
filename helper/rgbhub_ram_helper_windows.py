@@ -16,7 +16,9 @@ are never spoken to directly.
 
 The hub (running with the owner's normal rights) reaches it over the
 standard library's multiprocessing connection on 127.0.0.1, which only lets
-in a caller that knows the key in the owner's key file:
+in a caller that knows the key in the owner's key file (32 bytes). Startup
+failures and refused requests go to ram-helper.log next to the key file,
+since pythonw has nowhere to print:
 
     W <stick address> <register> <value>   (three hex bytes)   ->  OK | ERR ...
     PING                                                        ->  OK
@@ -29,12 +31,14 @@ import json
 import os
 import queue
 import re
+import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
 from multiprocessing import AuthenticationError
-from multiprocessing.connection import Listener
+from multiprocessing.connection import Connection, answer_challenge, deliver_challenge
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -55,7 +59,7 @@ def _load_shared():
 shared = _load_shared()
 
 MAX_LINE = shared.MAX_LINE
-IDLE_S = 5.0  # a connected caller that says nothing for this long is dropped
+IDLE_S = 2.0  # a caller that says nothing for this long is dropped (handshake included)
 
 # --- PowerShell -----------------------------------------------------------------------
 #
@@ -276,48 +280,132 @@ def make_answer(sticks: list[int], deliver, ready=lambda: True, sleep=None):
     return answer
 
 
-def serve(listener, answer, stopped=lambda: False) -> None:
-    """Answer requests, one connection at a time, until stopped."""
+def set_receive_timeout(sock: socket.socket, seconds: float) -> None:
+    """Make every read on `sock` fail after `seconds` of silence (and stuck writes too).
+
+    Set on the socket itself, so it holds inside the standard library's
+    handshake as well, which has no timeout of its own.
+    """
+    if sys.platform == "win32":
+        value = struct.pack("I", int(seconds * 1000))  # a DWORD of milliseconds
+    else:
+        value = struct.pack("ll", int(seconds), int(seconds % 1 * 1_000_000))  # a timeval
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, value)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, value)
+
+
+def _no_log(text: str) -> None:
+    pass
+
+
+def serve(
+    server: socket.socket,
+    key: bytes,
+    answer,
+    stopped=lambda: False,
+    log=_no_log,
+    idle_s: float = IDLE_S,
+) -> None:
+    """Answer requests, one connection at a time, until stopped.
+
+    A caller that does not prove it has the key, or says nothing for idle_s
+    seconds (during the handshake too), is dropped, so no caller can hold
+    the helper.
+    """
     while not stopped():
         try:
-            connection = listener.accept()
-        except (AuthenticationError, EOFError, ConnectionError):
-            continue  # a caller without the key, or one that hung up
+            sock, _ = server.accept()
         except OSError:
             if stopped():
                 return
             time.sleep(0.1)
             continue
+        if stopped():
+            sock.close()
+            return
+        try:
+            sock.setblocking(True)
+            set_receive_timeout(sock, idle_s)
+            connection = Connection(sock.detach())
+        except OSError:
+            sock.close()
+            continue
         with connection:
             try:
-                while connection.poll(IDLE_S):
+                # The two halves Listener.accept() does, under the timeout above.
+                deliver_challenge(connection, key)
+                answer_challenge(connection, key)
+                while connection.poll(idle_s):
                     line = connection.recv_bytes(MAX_LINE).decode("ascii", "replace")
-                    connection.send_bytes(answer(line).encode("ascii", "replace"))
+                    reply = answer(line)
+                    if not reply.startswith("OK"):
+                        log(f"refused {line.strip()[:MAX_LINE]!r}: {reply}")
+                    connection.send_bytes(reply.encode("ascii", "replace"))
+            except AuthenticationError:
+                log("turned away a caller without the key")
             except (OSError, EOFError):
-                continue  # went away, or sent something too long
+                continue  # went away, said nothing in time, or sent something too long
+            except Exception as error:  # keep the helper up whatever slipped through
+                log(f"unexpected {type(error).__name__}: {error}")
 
 
-def main(argv: list[str] | None = None, shell=None) -> int:
+LOG_LIMIT = 100_000  # bytes; the log starts again from empty past this
+
+
+def make_log(path: Path):
+    """A function that adds one dated line to `path`; it never raises."""
+
+    def log(text: str) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            mode = "w" if path.exists() and path.stat().st_size > LOG_LIMIT else "a"
+            with path.open(mode, encoding="utf-8", errors="replace") as file:
+                file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+        except OSError:
+            pass
+
+    return log
+
+
+KEY_LENGTH = 32
+
+
+def main(argv: list[str] | None = None, shell=None, stopped=lambda: False) -> int:
     parser = argparse.ArgumentParser(description="RGB-Hub RAM lighting helper (Windows)")
     parser.add_argument("--key-file", required=True, type=Path)
+    parser.add_argument("--log", type=Path, help="default: ram-helper.log next to the key file")
+    parser.add_argument("--port", type=int, default=ADDRESS[1], help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    log = make_log(args.log or args.key_file.parent / "ram-helper.log")
     shell = shell or _default_shell()
     try:
         maker = shell.ask(PS_MAKER)
     except OSError as error:
-        sys.exit(f"rgbhub RAM helper: cannot ask Windows what this machine is: {error}")
+        log(f"cannot start: cannot ask Windows what this machine is ({error})")
+        return 1
     if "QEMU" in maker.upper():
         return 0  # Windows in a virtual machine: there is no RAM of ours to light
-    key = args.key_file.read_bytes()
-    if len(key) < 16:
-        sys.exit(f"rgbhub RAM helper: the key in {args.key_file} is too short")
+    try:
+        key = args.key_file.read_bytes()
+    except OSError as error:
+        log(f"cannot start: cannot read the key file {args.key_file} ({error})")
+        return 1
+    if len(key) != KEY_LENGTH:
+        log(f"cannot start: the key in {args.key_file} is not {KEY_LENGTH} bytes")
+        return 1
     sticks = find_sticks(shell)
+    log("started; sticks: " + (" ".join(f"{a:02x}" for a in sticks) or "none found"))
 
     def deliver(address: int, register: int, value: int) -> bool:
         return wmi_deliver(address, register, value, shell=shell)
 
-    with Listener(ADDRESS, authkey=key) as listener:
-        serve(listener, make_answer(sticks, deliver))
+    try:
+        server = socket.create_server((ADDRESS[0], args.port))
+    except OSError as error:
+        log(f"cannot start: cannot listen on {ADDRESS[0]}:{args.port} ({error})")
+        return 1
+    with server:
+        serve(server, key, make_answer(sticks, deliver), stopped, log)
     return 0
 
 

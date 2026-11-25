@@ -9,9 +9,12 @@ child, and the connection is the same standard-library one on any system.
 """
 
 import ast
+import contextlib
 import importlib.util
+import socket
 import sys
 import threading
+import time
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Listener
 from pathlib import Path
@@ -230,6 +233,8 @@ def test_the_windows_helper_imports_nothing_that_reaches_a_bus():
         "pathlib",
         "queue",
         "re",
+        "socket",
+        "struct",
         "subprocess",
         "sys",
         "threading",
@@ -353,13 +358,9 @@ def test_the_real_helper_behind_the_connection(tmp_path):
         delivered.append((address, register, value))
         return True
 
-    listener = Listener(("127.0.0.1", 0), authkey=key)
-    stop = threading.Event()
     answer = w.make_answer([0xC2, 0xC6], deliver, sleep=lambda s: None)
-    thread = threading.Thread(target=w.serve, args=(listener, answer, stop.is_set), daemon=True)
-    thread.start()
-    try:
-        bus = winram.TcpRamBus(address=listener.address, key_file=key_file)
+    with real_helper(key, answer) as (address, logged):
+        bus = winram.TcpRamBus(address=address, key_file=key_file)
         assert bus.sticks() == [0xC2, 0xC6]
         bus.send([(0xC6, 0x20, 0x32)])
         with pytest.raises(OSError):
@@ -367,12 +368,142 @@ def test_the_real_helper_behind_the_connection(tmp_path):
         with pytest.raises(OSError):
             bus.send([(0xA0, 0x00, 0x00)])  # never: the memory's own chip
         assert delivered == [(0xC6, 0x20, 0x32)]
-    finally:
-        stop.set()
-        listener.close()
+    refused = [line.split(":")[0] for line in logged]
+    assert refused == ["refused 'W c4 20 32'", "refused 'W a0 00 00'"]
 
 
 def test_default_key_file_is_found_lazily(monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", "/somewhere/Local")
     assert winram.default_key_file() == Path("/somewhere/Local/rgbhub/ram-key")
     assert winram.HELPER_ADDRESS == ("127.0.0.1", 47231)
+
+
+@contextlib.contextmanager
+def real_helper(key, answer, idle_s=w.IDLE_S):
+    """The helper's own serving loop on a free local port, in a thread."""
+    server = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+    logged = []
+    thread = threading.Thread(
+        target=w.serve,
+        args=(server, key, answer, stop.is_set, logged.append, idle_s),
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield server.getsockname(), logged
+    finally:
+        stop.set()
+        with contextlib.suppress(OSError):
+            socket.create_connection(server.getsockname(), timeout=1).close()  # wake accept()
+        thread.join(5)
+        assert not thread.is_alive()
+        server.close()
+
+
+def test_a_silent_caller_cannot_hold_the_helper(tmp_path):
+    key = b"q" * 32
+    key_file = tmp_path / "ram-key"
+    key_file.write_bytes(key)
+    answer = w.make_answer([0xC2], lambda a, r, v: True, sleep=lambda s: None)
+    with real_helper(key, answer, idle_s=0.5) as (address, logged):
+        stalled = socket.create_connection(address)  # connects, then never says a word
+        try:
+            started = time.monotonic()
+            winram.TcpRamBus(address=address, key_file=key_file, timeout_s=3).send([])
+            assert time.monotonic() - started < 3
+            # Nor one that gets in and then goes quiet.
+            quiet = winram.TcpRamBus(address=address, key_file=key_file)._connect()
+            with quiet:
+                started = time.monotonic()
+                winram.TcpRamBus(address=address, key_file=key_file, timeout_s=3).send([])
+                assert time.monotonic() - started < 3
+        finally:
+            stalled.close()
+
+
+def test_a_wrong_key_is_turned_away_and_logged(tmp_path):
+    wrong = tmp_path / "wrong-key"
+    wrong.write_bytes(b"x" * 32)
+    answer = w.make_answer([0xC2], lambda a, r, v: True)
+    with real_helper(b"k" * 32, answer) as (address, logged):
+        with pytest.raises(OSError):
+            winram.TcpRamBus(address=address, key_file=wrong).send([])
+        deadline = time.monotonic() + 3
+        while not logged and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert logged == ["turned away a caller without the key"]
+
+
+def test_the_helper_stays_up_if_answering_goes_wrong(tmp_path):
+    key = b"k" * 32
+    key_file = tmp_path / "ram-key"
+    key_file.write_bytes(key)
+    calls = []
+
+    def answer(line):
+        calls.append(line)
+        if len(calls) == 1:
+            raise RuntimeError("a future bug")
+        return "OK"
+
+    with real_helper(key, answer) as (address, logged):
+        bus = winram.TcpRamBus(address=address, key_file=key_file)
+        with pytest.raises(OSError):
+            bus.send([])
+        bus.send([])
+    assert logged == ["unexpected RuntimeError: a future bug"]
+
+
+def test_the_log_starts_again_when_it_grows_too_big(tmp_path):
+    path = tmp_path / "rgbhub" / "ram-helper.log"
+    log = w.make_log(path)
+    log("first")
+    assert path.read_text().endswith(" first\n")
+    path.write_text("x" * (w.LOG_LIMIT + 1))
+    log("again")
+    assert path.read_text().endswith(" again\n") and len(path.read_text()) < 100
+    w.make_log(tmp_path / "file" / "under-a-file.log")  # never raises
+    (tmp_path / "file").write_text("")
+    w.make_log(tmp_path / "file" / "under-a-file.log")("lost, quietly")
+
+
+def startup(tmp_path, key: bytes | None, **kwargs):
+    key_file = tmp_path / "ram-key"
+    if key is not None:
+        key_file.write_bytes(key)
+    shell = FakeShell({w.PS_MAKER: "HP", w.PS_STICKS: '[{"DeviceLocator":"DIMM2"}]'})
+    code = w.main(["--key-file", str(key_file), *kwargs.get("args", [])], shell=shell)
+    return code, (tmp_path / "ram-helper.log").read_text()
+
+
+def test_startup_without_a_key_file_is_logged(tmp_path):
+    code, log = startup(tmp_path, None)
+    assert code == 1 and "cannot read the key file" in log
+
+
+@pytest.mark.parametrize("key", [b"", b"k" * 16, b"k" * 33])
+def test_startup_needs_a_32_byte_key(tmp_path, key):
+    code, log = startup(tmp_path, key)
+    assert code == 1 and "is not 32 bytes" in log
+
+
+def test_startup_with_the_port_taken_is_logged(tmp_path):
+    with socket.create_server(("127.0.0.1", 0)) as taken:
+        port = taken.getsockname()[1]
+        code, log = startup(tmp_path, b"k" * 32, args=["--port", str(port)])
+    assert code == 1 and f"cannot listen on 127.0.0.1:{port}" in log
+
+
+def test_startup_when_powershell_will_not_start_is_logged(tmp_path):
+    key_file = tmp_path / "ram-key"
+    code = w.main(["--key-file", str(key_file)], shell=FakeShell({w.PS_MAKER: OSError("no exe")}))
+    assert code == 1
+    assert "cannot ask Windows what this machine is" in (tmp_path / "ram-helper.log").read_text()
+
+
+def test_startup_logs_to_the_given_file(tmp_path):
+    shell = FakeShell({w.PS_MAKER: OSError("no exe")})
+    log = tmp_path / "elsewhere.log"
+    assert w.main(["--key-file", str(tmp_path / "k"), "--log", str(log)], shell=shell) == 1
+    assert "cannot start" in log.read_text()
