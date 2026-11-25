@@ -122,6 +122,15 @@ def read_pending(path: Path) -> str | None:
     return version if isinstance(version, str) and COMMIT.fullmatch(version) else None
 
 
+def running_version(root: Path | None = None) -> str | None:
+    """The version current.txt names (the one the launcher runs)."""
+    try:
+        version = ((root or install_root()) / "current.txt").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return version if COMMIT.fullmatch(version) else None
+
+
 def write_pending(path: Path, version: str, changes: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -441,6 +450,7 @@ def run(
     open_window: Callable[[str], None] = open_settings_window,
     single_instance: Callable[[], bool] = claim_single_instance,
     approve: Callable[[str], None] = approve_update,
+    current_version: Callable[[], str | None] = running_version,
 ) -> int:
     """Run the hub until Quit (returns 0), a restart request (75) or sign-out (0).
     The arguments after `places` are for tests."""
@@ -489,7 +499,14 @@ def run(
             hub_stopped.set()
 
     tray_box: list = []  # the tray, once it exists
-    offered = [read_pending(places.pending_file)]  # the version "Approve update..." is for
+
+    def waiting() -> str | None:
+        """The version waiting for approval: only the one that is running (after a
+        roll-back, the approval of the version that failed is not offered)."""
+        version = read_pending(places.pending_file)
+        return version if version is not None and version == current_version() else None
+
+    offered = [waiting()]  # the version "Approve update..." is for
 
     def approver(version: str | None) -> Callable[[], None] | None:
         """What "Approve update..." runs, or None while nothing waits."""
@@ -498,7 +515,7 @@ def run(
     def offer_approval() -> bool:  # on the loop; also a timer callback
         """Show or hide "Approve update..." as pending-privileged.json says
         (the updater writes it, approve-privileged.ps1 removes it)."""
-        version = read_pending(places.pending_file)
+        version = waiting()
         if version != offered[0] and tray_box:
             offered[0] = version
             tray_box[0].offer_update(approver(version))

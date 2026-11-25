@@ -541,7 +541,7 @@ def test_first_install_from_ubuntu_unpacks_the_wheels(tmp_path):
 # ---- the scripts ------------------------------------------------------------------
 
 
-SCRIPTS = sorted((INSTALL / "windows").glob("*"))
+SCRIPTS = sorted(p for p in (INSTALL / "windows").glob("*") if p.is_file())
 
 
 def test_install_windows_sh_parses():
@@ -606,3 +606,214 @@ def test_finish_setup_names_the_tasks_and_services():
     ):
         assert needed in text, needed
     assert "--owner-sid" not in text
+
+
+# ---- admin-only Program Files, written from Ubuntu ------------------------------------
+
+
+def load_install_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ntfs = load_install_module("ntfs_security", INSTALL / "ntfs_security.py")
+
+
+def test_sid_bytes_match_windows():
+    # Administrators as Windows stores it: revision 1, 2 sub-authorities, NT authority 5, 32, 544.
+    assert ntfs.sid_bytes("S-1-5-32-544") == bytes.fromhex("01020000000000052000000020020000")
+    assert ntfs.sid_bytes("S-1-5-18") == bytes.fromhex("010100000000000512000000")
+    for sid in ("S-1-5-32-544", "S-1-5-18", "S-1-5-32-545"):
+        assert ntfs.sid_text(ntfs.sid_bytes(sid)) == (sid, len(ntfs.sid_bytes(sid)))
+
+
+@pytest.mark.parametrize("folder", [True, False])
+def test_security_descriptor_decodes_back(folder):
+    data = ntfs.descriptor(folder)
+    assert len(data) == 20 + 16 + 12 + 8 + (8 + 16) + (8 + 12) + (8 + 16)
+    # Header: revision 1, self-relative + DACL protected + DACL present, no SACL.
+    assert data[:4] == bytes([1, 0]) + (0x8000 | 0x1000 | 0x0004).to_bytes(2, "little")
+    got = ntfs.decode(data)
+    inherit = 0x03 if folder else 0
+    assert got == {
+        "control": 0x9004,
+        "owner": "S-1-5-32-544",
+        "group": "S-1-5-18",
+        "sacl": False,
+        "aces": [
+            (0, inherit, 0x001F01FF, "S-1-5-32-544"),
+            (0, inherit, 0x001F01FF, "S-1-5-18"),
+            (0, inherit, 0x001200A9, "S-1-5-32-545"),
+        ],
+    }
+    assert ntfs.is_ours(data, folder)
+    assert not ntfs.is_ours(ntfs.descriptor(not folder), folder)
+    assert not ntfs.is_ours(b"\x01\x00\x04\x80" + bytes(16), folder)  # Everyone-style junk
+    assert not ntfs.is_ours(b"", folder)
+
+
+def test_secure_tree_sets_every_folder_and_file(tmp_path):
+    (tmp_path / "pf" / "python").mkdir(parents=True)
+    (tmp_path / "pf" / "python" / "pythonw.exe").write_bytes(b"MZ")
+    (tmp_path / "pf" / "helper.py").write_text("#")
+    store = {}
+
+    def setxattr(path, name, value, follow_symlinks=True):
+        assert name == "system.ntfs_security" and not follow_symlinks
+        store[Path(path)] = value
+
+    def getxattr(path, name, follow_symlinks=True):
+        return store[Path(path)]
+
+    assert ntfs.secure_tree(tmp_path / "pf", setxattr, getxattr) == 4
+    assert store[tmp_path / "pf"] == ntfs.descriptor(True)
+    assert store[tmp_path / "pf" / "python" / "pythonw.exe"] == ntfs.descriptor(False)
+
+    with pytest.raises(OSError):  # read back as something else
+        ntfs.secure_tree(tmp_path / "pf", setxattr, lambda p, n, follow_symlinks: b"junk")
+    (tmp_path / "pf" / "link").symlink_to(tmp_path)
+    with pytest.raises(OSError):
+        ntfs.secure_tree(tmp_path / "pf", setxattr, getxattr)
+
+
+def test_ntfs_security_fails_where_it_cannot_be_set(tmp_path, capsys):
+    """Not an ntfs3 file system: exit 1, and install-windows.sh stops before copying."""
+    assert ntfs.main([str(tmp_path)]) == 1
+    assert "admin-only" in capsys.readouterr().err
+
+
+def test_install_script_makes_program_files_admin_only_before_copying():
+    text = (INSTALL / "install-windows.sh").read_text()
+    first_secure = text.index('python3 -I "$snap/install/ntfs_security.py" "$pf_new"')
+    first_copy = text.index('cp -r "$tmp/python" "$pf_new/python"')
+    assert first_secure < first_copy
+    assert text.count('ntfs_security.py" "$pf_new"') == 2  # again once everything is in
+    assert 'mv "$pf_new" "$program"' in text  # swapped in whole
+    assert "merge-base --is-ancestor" in text  # never backwards
+    assert "s/$/\\r/" in text and '"$pf_new/install/windows/RGB-Hub-setup.cmd"' in text
+
+
+# ---- an approved update is checked against GitHub ----------------------------------------
+
+
+verify = load_install_module("verify_update", INSTALL / "windows" / "verify_update.py")
+
+
+def approved_version(tmp_path, sha=A):
+    v = make_version(tmp_path / "Programs" / "RGB-Hub", sha)
+    (v / "install/windows/verify_update.py").write_text("# checker\n")
+    return v
+
+
+class FakeGitHub:
+    def __init__(self, version, status="ahead", changed=None, error=None):
+        self.version = version
+        self.status = status
+        self.changed = changed or {}
+        self.error = error
+        self.asked = []
+
+    def json(self, url):
+        self.asked.append(url)
+        if self.error:
+            raise self.error
+        return {"status": self.status}
+
+    def bytes(self, url):
+        self.asked.append(url)
+        prefix = f"{verify.RAW}/{self.version.name}/"
+        assert url.startswith(prefix)
+        name = url[len(prefix) :]
+        return self.changed.get(name, (self.version / name).read_bytes())
+
+
+def test_verified_update_stages_githubs_copies(tmp_path):
+    v = approved_version(tmp_path)
+    gh = FakeGitHub(v, status="identical")
+    staging = tmp_path / "staging"
+    names = verify.stage(v, staging, gh.json, gh.bytes)
+    assert names == [
+        "helper/rgbhub_ram_helper.py",
+        "helper/rgbhub_ram_helper_windows.py",
+        "install/windows/approve-privileged.ps1",
+        "install/windows/finish-setup.ps1",
+        "install/windows/uninstall.ps1",
+        "install/windows/verify_update.py",
+    ]
+    assert gh.asked[0] == f"https://api.github.com/repos/Konfus-dev/RGB-Hub/compare/{A}...main"
+    for name in names:
+        assert (staging / name).read_bytes() == (v / name).read_bytes()
+    assert not (staging / "install/windows/RGB-Hub-setup.cmd").exists()
+
+
+def test_verified_update_refuses_a_changed_file(tmp_path):
+    v = approved_version(tmp_path)
+    gh = FakeGitHub(v, changed={"helper/rgbhub_ram_helper_windows.py": b"# the real one\n"})
+    with pytest.raises(verify.Refused, match="rgbhub_ram_helper_windows.py"):
+        verify.stage(v, tmp_path / "staging", gh.json, gh.bytes)
+    assert not (tmp_path / "staging").exists()
+
+
+@pytest.mark.parametrize("status", ["behind", "diverged", None])
+def test_verified_update_refuses_a_commit_not_on_main(tmp_path, status):
+    v = approved_version(tmp_path)
+    gh = FakeGitHub(v, status=status)
+    with pytest.raises(verify.Refused, match="main"):
+        verify.stage(v, tmp_path / "staging", gh.json, gh.bytes)
+    assert not (tmp_path / "staging").exists()
+
+
+def test_verified_update_refuses_odd_folders_and_says_when_github_is_away(tmp_path, capsys):
+    odd = tmp_path / "versions" / "not-a-commit"
+    (odd / "helper").mkdir(parents=True)
+    (odd / "helper" / "x.py").write_text("#")
+    gh = FakeGitHub(odd)
+    with pytest.raises(verify.Refused):
+        verify.stage(odd, tmp_path / "staging", gh.json, gh.bytes)
+    assert gh.asked == []
+
+    v = approved_version(tmp_path)
+    away = FakeGitHub(v, error=verify.Unreachable("cannot reach GitHub: offline"))
+    with pytest.raises(verify.Unreachable):
+        verify.stage(v, tmp_path / "staging", away.json, away.bytes)
+    assert not (tmp_path / "staging").exists()
+
+
+def test_verify_update_exit_codes(tmp_path, monkeypatch, capsys):
+    v = approved_version(tmp_path)
+    staging = str(tmp_path / "staging")
+
+    def unreachable(version, staging):
+        raise verify.Unreachable("cannot reach GitHub: offline")
+
+    monkeypatch.setattr(verify, "stage", unreachable)
+    assert verify.main(["--from", str(v), "--staging", staging]) == 2
+    assert "try again later" in capsys.readouterr().err
+
+    def refuse(version, staging):
+        raise verify.Refused("helper/x.py differs")
+
+    monkeypatch.setattr(verify, "stage", refuse)
+    assert verify.main(["--from", str(v), "--staging", staging]) == 1
+    monkeypatch.setattr(verify, "stage", lambda version, staging: ["helper/x.py"])
+    assert verify.main(["--from", str(v), "--staging", staging]) == 0
+
+
+def test_layout_counts_the_checker_as_privileged(tmp_path):
+    lay = layout(tmp_path)
+    new = approved_version(tmp_path)
+    assert "install/windows/verify_update.py" in lay.privileged_changes(None, new)
+
+
+def test_finish_setup_checks_approved_updates_and_refuses_links():
+    text = (INSTALL / "windows" / "finish-setup.ps1").read_text()
+    assert "verify_update.py" in text and "--staging" in text
+    assert "Assert-NoReparse" in text and "ReparsePoint" in text
+    assert "/setowner" in text  # Program Files only
+    assert text.count("/setowner") == 1
+    assert "/grant'" not in text and "(OI)(CI)F" not in text  # no grants on the owner's trees
+    # The services' note is saved before each service is changed.
+    body = text[text.index("function Disable-HpServices") :]
+    assert body.index("Save-Record $saved") < body.index("sc.exe config")

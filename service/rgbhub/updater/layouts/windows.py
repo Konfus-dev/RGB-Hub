@@ -44,7 +44,7 @@ CREATE_NO_WINDOW = 0x08000000  # no console window flashing up from pythonw.exe
 NEW_START_WAIT_S = 60  # how long the launcher may take to start the new hub
 HTTP_TIMEOUT_S = 10
 # What finish-setup.ps1 installs into Program Files: (folder in a version, files).
-PRIVILEGED = (("helper", "*.py"), ("install/windows", "*.ps1"))
+PRIVILEGED = (("helper", "*.py"), ("install/windows", "*.ps1"), ("install/windows", "*.py"))
 # Run by the embeddable python.exe: pip from pip.whl (first argument), with the rest.
 PIP_CODE = (
     "import sys; sys.path.insert(0, sys.argv.pop(1)); "

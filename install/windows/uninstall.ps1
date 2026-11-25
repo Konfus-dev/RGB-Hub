@@ -38,9 +38,13 @@ $StartTypes = @{ 0 = 'boot'; 1 = 'system'; 2 = 'auto'; 3 = 'demand'; 4 = 'disabl
 
 foreach ($task in @('RGB-Hub update', 'RGB-Hub', 'RGB-Hub RAM')) {
     if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
-        Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $task -Confirm:$false
-        Write-Host "Removed the task '$task'"
+        try {
+            Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false
+            Write-Host "Removed the task '$task'"
+        } catch {
+            Write-Host "Could not remove the task '$task': $_"
+        }
     }
 }
 # The hub shows the Default look when it is stopped; give it a moment to let go.
@@ -64,13 +68,29 @@ if (Test-Path $Record) {
     }
 }
 
-foreach ($folder in @($AppRoot, $Data, $Program)) {
-    if (Test-Path $folder) {
-        Remove-Item -Recurse -Force $folder
-        Write-Host "Removed $folder"
+# Anything still running from the two install folders (the hub, the RAM helper,
+# the updater) would keep its files in use.
+foreach ($process in @(Get-CimInstance Win32_Process)) {
+    $exe = $process.ExecutablePath
+    if ($exe -and ($exe.StartsWith("$Program\", 'OrdinalIgnoreCase') -or $exe.StartsWith("$AppRoot\", 'OrdinalIgnoreCase'))) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+        Write-Host "Stopped $($process.Name) ($($process.ProcessId))"
     }
 }
-Remove-Item -Force -ErrorAction SilentlyContinue $Startup
+Start-Sleep -Seconds 1
+
+$left = @()
+foreach ($folder in @($AppRoot, $Data, $Program)) {
+    if (-not (Test-Path -LiteralPath $folder)) { continue }
+    try {
+        Remove-Item -LiteralPath $folder -Recurse -Force
+        Write-Host "Removed $folder"
+    } catch {
+        Write-Host "Could not remove all of ${folder}: $_"
+        $left += $folder
+    }
+}
+Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $Startup
 if ($RemoveSettings -and (Test-Path $Roaming)) {
     Remove-Item -Recurse -Force $Roaming
     Write-Host "Removed the settings ($Roaming)"
@@ -79,5 +99,9 @@ if ($RemoveSettings -and (Test-Path $Roaming)) {
 }
 
 Write-Host ''
+if ($left.Count) {
+    Write-Host ('Still there (delete by hand after a restart): ' + ($left -join ', '))
+    exit 1
+}
 Write-Host 'RGB-Hub is removed. OMEN Gaming Hub can be installed again from the Microsoft Store.'
 exit 0

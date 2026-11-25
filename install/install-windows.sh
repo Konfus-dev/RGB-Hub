@@ -86,9 +86,13 @@ as_owner() {
 tmp=
 mounted_here=
 made_rw=
+pf_new=
 cleanup() {
     local status=$?
     trap - EXIT
+    if [[ -n $pf_new ]]; then
+        rm -rf "$pf_new"  # a half-built Program Files copy; the old one is untouched
+    fi
     if [[ -n $made_rw ]]; then
         sync
         if ! mount -o remount,ro "$mnt"; then
@@ -227,6 +231,19 @@ else
     echo "    NOTE: could not read the Ubuntu settings; Windows starts with the defaults."
 fi
 
+# Never move Windows backwards: if it runs a commit this main does not contain
+# (the updater took it from GitHub, or this checkout does not know it), keep
+# RGB-Hub's program files on Windows as they are.
+root="$win_home/AppData/Local/Programs/RGB-Hub"
+windows_ahead=
+installed="$(head -c 64 "$root/current.txt" 2>/dev/null | tr -d '\r\n ')" || installed=
+if [[ $installed =~ ^[0-9a-f]{40}$ && $installed != "$sha" && -d $root/versions/$installed ]] &&
+    ! as_owner git -C "$repo" merge-base --is-ancestor "$installed" "$sha" 2>/dev/null; then
+    windows_ahead=1
+    echo "NOTE: Windows runs RGB-Hub ${installed:0:7}, which main (${sha:0:7}) does not contain."
+    echo "      Its program files are kept as they are (no going back); settings and setup are still done."
+fi
+
 # --- 3. Copy to Windows ------------------------------------------------------------
 
 check_windows
@@ -247,27 +264,53 @@ replace_folder() {
     mv "$dest.new" "$dest"
 }
 
-program="$mnt/Program Files/RGB-Hub"
-echo "==> C:\\Program Files\\RGB-Hub (the RAM helper; admin-only once setup has run)"
-mkdir -p "$program/helper" "$program/install/windows"
-replace_folder "$tmp/python" "$program/python"
-cp "$snap/helper/rgbhub_ram_helper.py" "$snap/helper/rgbhub_ram_helper_windows.py" "$program/helper/"
-if [[ -n $sticks ]]; then
-    printf '%s\n' "$sticks" >"$program/helper/ram-sticks.txt"
-fi
-cp "$snap"/install/windows/*.ps1 "$snap/install/windows/RGB-Hub-setup.cmd" "$program/install/windows/"
+if [[ -z $windows_ahead ]]; then
+    # C:\Program Files\RGB-Hub is built complete beside the old one, made
+    # admin-only (Administrators and SYSTEM full control, Users read and run)
+    # through ntfs3's system.ntfs_security, then swapped in. Files ntfs3 makes
+    # would otherwise let Everyone change them, the RAM helper's Python included,
+    # which an existing "RGB-Hub RAM" task runs with full rights at sign-in.
+    program="$mnt/Program Files/RGB-Hub"
+    pf_new="$mnt/Program Files/.RGB-Hub.new"
+    pf_old="$mnt/Program Files/.RGB-Hub.old"
+    echo "==> C:\\Program Files\\RGB-Hub (the RAM helper; admin-only)"
+    rm -rf "$pf_new" "$pf_old"
+    mkdir "$pf_new"
+    if ! python3 -I "$snap/install/ntfs_security.py" "$pf_new"; then
+        rmdir "$pf_new"
+        pf_new=
+        die "could not make C:\\Program Files\\RGB-Hub admin-only from Ubuntu; nothing was copied"
+    fi
+    mkdir -p "$pf_new/helper" "$pf_new/install/windows"
+    cp -r "$tmp/python" "$pf_new/python"
+    cp "$snap/helper/rgbhub_ram_helper.py" "$snap/helper/rgbhub_ram_helper_windows.py" "$pf_new/helper/"
+    if [[ -n $sticks ]]; then
+        printf '%s\n' "$sticks" >"$pf_new/helper/ram-sticks.txt"
+    fi
+    cp "$snap"/install/windows/*.ps1 "$snap"/install/windows/*.py "$pf_new/install/windows/"
+    sed -e 's/$/\r/' "$snap/install/windows/RGB-Hub-setup.cmd" >"$pf_new/install/windows/RGB-Hub-setup.cmd"
+    if [[ -f $program/disabled-services.json ]]; then
+        cp "$program/disabled-services.json" "$pf_new/"  # HP's start types from before setup
+    fi
+    python3 -I "$snap/install/ntfs_security.py" "$pf_new" ||
+        die "could not make C:\\Program Files\\RGB-Hub admin-only from Ubuntu; the old copy is left as it was"
+    if [[ -e $program ]]; then
+        mv "$program" "$pf_old"
+    fi
+    mv "$pf_new" "$program"
+    pf_new=
+    rm -rf "$pf_old"
 
-root="$win_home/AppData/Local/Programs/RGB-Hub"
-echo "==> C:\\Users\\$user\\AppData\\Local\\Programs\\RGB-Hub (the hub and its updates)"
-mkdir -p "$root"
-replace_folder "$tmp/python" "$root/python"
-cp "$tmp/pip.whl" "$root/pip.whl"
-cp "$snap/service/rgbhub/platforms/windows/launcher.py" "$root/launcher.py"
-# The snapshot installs itself with the updater's own code (as install-user.sh
-# does on Ubuntu): versions\<commit>\ with the wheels unpacked into its
-# site-packages, the updater's copy, current.txt and the update state. Its
-# self-check needs Windows, so it runs at the first update instead.
-boot='
+    echo "==> C:\\Users\\$user\\AppData\\Local\\Programs\\RGB-Hub (the hub and its updates)"
+    mkdir -p "$root"
+    replace_folder "$tmp/python" "$root/python"
+    cp "$tmp/pip.whl" "$root/pip.whl"
+    cp "$snap/service/rgbhub/platforms/windows/launcher.py" "$root/launcher.py"
+    # The snapshot installs itself with the updater's own code (as install-user.sh
+    # does on Ubuntu): versions\<commit>\ with the wheels unpacked into its
+    # site-packages, the updater's copy, current.txt and the update state. Its
+    # self-check needs Windows, so it runs at the first update instead.
+    boot='
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -281,7 +324,8 @@ try:
 except (UpdateError, OSError) as e:
     sys.exit(f"ERROR: could not install RGB-Hub {sha[:7]}: {e}")
 '
-python3 -I -c "$boot" "$tmp/rgbhub.zip/$top/service" "$root" "$tmp/wheels" "$tmp/rgbhub.zip" "$sha"
+    python3 -I -c "$boot" "$tmp/rgbhub.zip/$top/service" "$root" "$tmp/wheels" "$tmp/rgbhub.zip" "$sha"
+fi
 
 echo "==> Settings"
 if [[ -n $values ]]; then
@@ -297,6 +341,8 @@ sed -e "s/@USER@/$user/g" -e 's/$/\r/' "$snap/install/windows/RGB-Hub-setup.cmd"
 sync
 
 echo
-echo "Done: RGB-Hub ${sha:0:7} is on Windows. Start Windows and sign in as $user:"
+shown="${sha:0:7}"
+[[ -z $windows_ahead ]] || shown="${installed:0:7}"
+echo "Done: RGB-Hub $shown is on Windows. Start Windows and sign in as $user:"
 echo "Windows asks once for admin rights (to finish the setup and remove OMEN"
 echo "Gaming Hub); after that RGB-Hub starts at every sign-in and updates itself."

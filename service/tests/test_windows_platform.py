@@ -1034,7 +1034,7 @@ def test_run_shows_the_updaters_messages_and_offers_approval(tmp_path, monkeypat
 
     monkeypatch.setattr(windows, "LOOK_AGAIN_MS", 50)
     code, places, _opened, _device = run_platform(
-        tmp_path, monkeypatch, act, approve=approved.append
+        tmp_path, monkeypatch, act, approve=approved.append, current_version=lambda: sha
     )
     assert code == 0
     t = FakeTray.instances[0]
@@ -1056,8 +1056,42 @@ def test_run_offers_an_approval_that_waited_from_before(tmp_path, monkeypatch):
         t.approve_update()
         t.quit()
 
-    run_platform(tmp_path, monkeypatch, act, approve=approved.append)
+    run_platform(tmp_path, monkeypatch, act, approve=approved.append, current_version=lambda: sha)
     assert approved == [sha]
+
+
+def test_run_offers_approval_only_for_the_running_version(tmp_path, monkeypatch):
+    """After a roll-back current.txt names the old version again: the failed
+    version's approval is not offered."""
+    sha, old = "e" * 40, "a" * 40
+    places = windows.Places.from_environ(
+        {"APPDATA": str(tmp_path / "Roaming"), "LOCALAPPDATA": str(tmp_path / "Local")}
+    )
+    windows.write_pending(places.pending_file, sha, ["helper/rgbhub_ram_helper.py"])
+    running = [sha]
+    seen = {}
+    monkeypatch.setattr(windows, "LOOK_AGAIN_MS", 50)
+
+    def act(t, s, places):
+        seen["before"] = t.approve_update is not None
+        running[0] = old  # rolled back
+        for _ in range(200):
+            if t.approve_update is None:
+                break
+            threading.Event().wait(0.02)
+        seen["after"] = t.approve_update
+        t.quit()
+
+    run_platform(tmp_path, monkeypatch, act, current_version=lambda: running[0])
+    assert seen == {"before": True, "after": None}
+
+
+def test_running_version_reads_current_txt(tmp_path):
+    assert windows.running_version(tmp_path) is None
+    (tmp_path / "current.txt").write_text("f" * 40 + "\n")
+    assert windows.running_version(tmp_path) == "f" * 40
+    (tmp_path / "current.txt").write_text("..\\x\n")
+    assert windows.running_version(tmp_path) is None
 
 
 def test_read_pending_refuses_odd_versions(tmp_path):

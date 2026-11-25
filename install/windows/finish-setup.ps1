@@ -6,8 +6,9 @@ in the Startup folder asks for them):
 
     finish-setup.ps1 -User <folder name under C:\Users>
 
-- gives the installed files the permissions Windows would have given them
-  (files written from Ubuntu carry none of their own);
+- C:\Program Files\RGB-Hub gets the permissions Windows gives Program Files
+  (install-windows.sh already made it admin-only); the owner's own folders get
+  their inherited permissions back (files written from Ubuntu carry their own);
 - makes the key the hub and the RAM helper share (%LOCALAPPDATA%\rgbhub\ram-key);
 - registers three scheduled tasks, all at the owner's sign-in:
     RGB-Hub         the hub (launcher.py), with the owner's normal rights
@@ -20,12 +21,16 @@ in the Startup folder asks for them):
 Everything goes to %LOCALAPPDATA%\rgbhub\setup.log.
 
     finish-setup.ps1 -User <name> -HelperOnly -From <version folder>
-        an approved update (approve-privileged.ps1): copies that version's RAM
-        helper and setup scripts into Program Files, then registers the tasks
-        again with the setup script just copied
+        an approved update (approve-privileged.ps1): verify_update.py (the
+        installed copy) checks that version's admin parts against GitHub and
+        stages GitHub's copies under Program Files; only those are moved into
+        place, then the tasks are registered again by the setup script just
+        installed
     finish-setup.ps1 -User <name> -HelperOnly
         registers the tasks again and restarts the RAM helper
 
+It never follows a link or junction in the owner's folders (they could point
+anywhere, and this runs with full rights): it stops if it finds one.
 Inside a virtual machine (the WinBridge VM boots this same Windows) it does
 nothing at all.
 
@@ -44,24 +49,50 @@ if ((Get-CimInstance Win32_ComputerSystem).Manufacturer -match 'QEMU') {
 }
 
 $Program = Join-Path $env:ProgramFiles 'RGB-Hub'
+$Staging = Join-Path $Program 'staging'
 $UserHome = Join-Path $env:SystemDrive "Users\$User"
-$AppRoot = Join-Path $UserHome 'AppData\Local\Programs\RGB-Hub'
-$Data = Join-Path $UserHome 'AppData\Local\rgbhub'
+$Local = Join-Path $UserHome 'AppData\Local'
+$AppRoot = Join-Path $Local 'Programs\RGB-Hub'
+$Data = Join-Path $Local 'rgbhub'
 $Roaming = Join-Path $UserHome 'AppData\Roaming\rgbhub'
 $Key = Join-Path $Data 'ram-key'
+$Log = Join-Path $Data 'setup.log'
 $Startup = Join-Path $UserHome 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\RGB-Hub-setup.cmd'
 $Record = Join-Path $Program 'disabled-services.json'
 $Services = @('HPOmenCap', 'HPOmenCustomCapDriver', 'HpTouchpointAnalyticsService', 'hp-one-agent-service')
 $SystemSid = 'S-1-5-18'
 $AdminsSid = 'S-1-5-32-544'
 
-New-Item -ItemType Directory -Force -Path $Data | Out-Null
-$Log = Join-Path $Data 'setup.log'
+function Test-Reparse([string]$Path) {
+    # A link or junction (or anything else that redirects): never written through.
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $item = Get-Item -LiteralPath $Path -Force
+    return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+function Assert-NoReparse([string]$Path, [switch]$Tree) {
+    if (Test-Reparse $Path) {
+        throw "$Path is a link or junction; RGB-Hub setup will not work through it."
+    }
+    if ($Tree -and (Test-Path -LiteralPath $Path)) {
+        $found = Get-ChildItem -LiteralPath $Path -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) {
+            throw "$($found.FullName) is a link or junction; RGB-Hub setup will not work through it."
+        }
+    }
+}
 
 function Say([string]$Text) {
     $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $Text
-    Add-Content -Path $Log -Value $line -Encoding Ascii
     Write-Host $line
+    try {
+        if ((Test-Path -LiteralPath $Data) -and -not (Test-Reparse $Data) -and -not (Test-Reparse $Log)) {
+            Add-Content -LiteralPath $Log -Value $line -Encoding Ascii
+        }
+    } catch {
+        Write-Host "(not written to ${Log}: $_)"
+    }
 }
 
 function Run-Native([string]$What, [string]$Exe, [string[]]$Arguments) {
@@ -87,22 +118,30 @@ function Find-Owner {
     return @{ Sid = $found.SID; Account = $sid.Translate([Security.Principal.NTAccount]).Value }
 }
 
-function Reset-Permissions([string]$Folder, [string]$OwnerSid, [switch]$OwnerFullControl) {
-    # As if Windows had made the files: inherited permissions, a proper owner.
-    if (-not (Test-Path $Folder)) { return }
-    Run-Native "Setting the owner of $Folder" 'icacls.exe' @($Folder, '/setowner', "*$OwnerSid", '/T', '/C', '/Q')
-    Run-Native "Resetting the permissions of $Folder" 'icacls.exe' @($Folder, '/reset', '/T', '/C', '/Q')
-    if ($OwnerFullControl) {
-        Run-Native "Giving the owner $Folder" 'icacls.exe' @($Folder, '/grant', "*${OwnerSid}:(OI)(CI)F", '/Q')
-    }
+function Reset-ProgramFolder {
+    # Admin-only already (install-windows.sh); now exactly what Program Files gives.
+    if (-not (Test-Path -LiteralPath $Program)) { return }
+    Assert-NoReparse $Program -Tree
+    Run-Native "Setting the owner of $Program" 'icacls.exe' @($Program, '/setowner', "*$AdminsSid", '/T', '/C', '/L', '/Q')
+    Run-Native "Resetting the permissions of $Program" 'icacls.exe' @($Program, '/reset', '/T', '/C', '/L', '/Q')
+}
+
+function Reset-OwnerFolder([string]$Folder) {
+    # The owner's folder inherits full control for the owner from the profile;
+    # files written from Ubuntu carry their own permissions instead: drop those.
+    if (-not (Test-Path -LiteralPath $Folder)) { return }
+    Assert-NoReparse $Folder -Tree
+    Run-Native "Resetting the permissions of $Folder" 'icacls.exe' @($Folder, '/reset', '/T', '/C', '/L', '/Q')
 }
 
 function New-RamKey([string]$OwnerSid) {
     # 32 random bytes; only the owner (the hub), SYSTEM and administrators may read them.
-    if ((Test-Path $Key) -and ((Get-Item $Key).Length -ne 32)) {
-        Remove-Item -Force $Key
+    Assert-NoReparse $Data
+    Assert-NoReparse $Key
+    if ((Test-Path -LiteralPath $Key) -and ((Get-Item -LiteralPath $Key -Force).Length -ne 32)) {
+        Remove-Item -LiteralPath $Key -Force
     }
-    if (-not (Test-Path $Key)) {
+    if (-not (Test-Path -LiteralPath $Key)) {
         $bytes = New-Object byte[] 32
         $random = New-Object Security.Cryptography.RNGCryptoServiceProvider
         $random.GetBytes($bytes)
@@ -110,8 +149,9 @@ function New-RamKey([string]$OwnerSid) {
         [IO.File]::WriteAllBytes($Key, $bytes)
         Say "Made the RAM helper's key $Key"
     }
+    Assert-NoReparse $Key
     Run-Native 'Making the key private' 'icacls.exe' @(
-        $Key, '/inheritance:r', '/grant:r', "*${OwnerSid}:(R)", "*${SystemSid}:(R)", "*${AdminsSid}:(R)", '/Q'
+        $Key, '/inheritance:r', '/grant:r', "*${OwnerSid}:(R)", "*${SystemSid}:(R)", "*${AdminsSid}:(R)", '/L', '/Q'
     )
 }
 
@@ -167,12 +207,20 @@ function Remove-OmenHub {
     }
 }
 
+function Save-Record($Saved) {
+    # Written beside it, then swapped in: never half a file.
+    $temporary = "$Record.tmp"
+    $Saved | ConvertTo-Json | Set-Content -LiteralPath $temporary -Encoding Ascii
+    Move-Item -LiteralPath $temporary -Destination $Record -Force
+}
+
 function Disable-HpServices {
-    # Each service's start type before setup, kept for uninstall.ps1. A service
-    # already noted keeps its first note (running setup again must not note "disabled").
+    # Each service's start type before setup, kept for uninstall.ps1. The note is
+    # saved before the service is changed, and a service already noted keeps its
+    # first note, so an interrupted or repeated run never notes "disabled".
     $saved = @{}
-    if (Test-Path $Record) {
-        (Get-Content -Raw $Record | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $saved[$_.Name] = $_.Value }
+    if (Test-Path -LiteralPath $Record) {
+        (Get-Content -Raw -LiteralPath $Record | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $saved[$_.Name] = $_.Value }
     }
     foreach ($name in $Services) {
         $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
@@ -180,11 +228,12 @@ function Disable-HpServices {
             Say "${name}: not installed"
             continue
         }
-        $item = Get-ItemProperty $key
         if (-not $saved.ContainsKey($name)) {
+            $item = Get-ItemProperty $key
             $delayed = 0
             if ($item.PSObject.Properties['DelayedAutostart']) { $delayed = [int]$item.DelayedAutostart }
             $saved[$name] = @{ Start = [int]$item.Start; DelayedAutostart = $delayed }
+            Save-Record $saved
         }
         & sc.exe stop $name 2>&1 | Out-Null
         & sc.exe config $name start= disabled 2>&1 | Out-Null
@@ -193,32 +242,57 @@ function Disable-HpServices {
         }
         Say "${name}: stopped and switched off"
     }
-    $saved | ConvertTo-Json | Set-Content -Path $Record -Encoding Ascii
 }
 
-function Copy-Privileged([string]$Version) {
-    # Only an RGB-Hub version folder of this owner, and only these files.
+function Install-Approved([string]$Version) {
+    # Only an RGB-Hub version folder of this owner; only what GitHub confirms.
     $full = [IO.Path]::GetFullPath($Version)
-    if (($full -notmatch '^(.+)\\versions\\[0-9a-f]{40}$') -or ($Matches[1] -ne $AppRoot)) {
+    if (($full -notmatch '^(.+)\\versions\\([0-9a-f]{40})$') -or ($Matches[1] -ne $AppRoot)) {
         throw "Not an RGB-Hub version folder: $Version"
     }
+    $commit = $Matches[2]
+    Assert-NoReparse $AppRoot
+    Assert-NoReparse $full -Tree
+    if (Test-Path -LiteralPath $Staging) { Remove-Item -LiteralPath $Staging -Recurse -Force }
+    # The installed checker (admin-only), with the Python beside it.
+    $output = & "$Program\python\python.exe" -I "$Program\install\windows\verify_update.py" --from $full --staging $Staging 2>&1
+    $status = $LASTEXITCODE
+    Say "verify_update.py: $output"
+    if ($status -eq 2) {
+        throw "GitHub could not be reached to check update $($commit.Substring(0, 7)); nothing was installed. Try again later."
+    }
+    if ($status -ne 0) {
+        throw "Update $($commit.Substring(0, 7)) did not match GitHub; nothing was installed."
+    }
     New-Item -ItemType Directory -Force -Path "$Program\helper", "$Program\install\windows" | Out-Null
-    Copy-Item -Force -Path "$full\helper\*.py" -Destination "$Program\helper"
-    Copy-Item -Force -Path "$full\install\windows\*.ps1" -Destination "$Program\install\windows"
-    Say "Copied the RAM helper and setup scripts of $(Split-Path -Leaf $full)"
+    if (Test-Path -LiteralPath "$Staging\helper") {
+        Copy-Item -Force -Path "$Staging\helper\*" -Destination "$Program\helper"
+    }
+    if (Test-Path -LiteralPath "$Staging\install\windows") {
+        Copy-Item -Force -Path "$Staging\install\windows\*" -Destination "$Program\install\windows"
+    }
+    Remove-Item -LiteralPath $Staging -Recurse -Force
+    Say "Installed the RAM helper and setup scripts of $($commit.Substring(0, 7)), checked with GitHub"
 }
 
 try {
     if (-not (Test-Admin)) {
         throw 'finish-setup.ps1 needs admin rights.'
     }
+    # Nothing on the way to the owner's folders may redirect elsewhere.
+    foreach ($folder in @($UserHome, (Join-Path $UserHome 'AppData'), $Local, (Join-Path $Local 'Programs'),
+            (Join-Path $UserHome 'AppData\Roaming'), $Data)) {
+        Assert-NoReparse $folder
+    }
+    New-Item -ItemType Directory -Force -Path $Data | Out-Null
+    Assert-NoReparse $Data
     $Owner = Find-Owner
     Say "RGB-Hub setup for $($Owner.Account) (HelperOnly: $HelperOnly)"
 
     if ($HelperOnly) {
         if ($From) {
-            Copy-Privileged $From
-            Reset-Permissions $Program $AdminsSid
+            Install-Approved $From
+            Reset-ProgramFolder
             # The setup script itself may have changed: let the new one register the tasks.
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$Program\install\windows\finish-setup.ps1" -User $User -HelperOnly
             exit $LASTEXITCODE
@@ -230,9 +304,9 @@ try {
         exit 0
     }
 
-    Reset-Permissions $Program $AdminsSid
-    Reset-Permissions $AppRoot $Owner.Sid -OwnerFullControl
-    Reset-Permissions $Roaming $Owner.Sid
+    Reset-ProgramFolder
+    Reset-OwnerFolder $AppRoot
+    Reset-OwnerFolder $Roaming
     New-RamKey $Owner.Sid
     Register-Tasks $Owner
     Remove-OmenHub
@@ -243,7 +317,7 @@ try {
     Start-ScheduledTask -TaskName 'RGB-Hub update'
     Say 'Tasks started'
 
-    Remove-Item -Force -ErrorAction SilentlyContinue $Startup
+    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $Startup
     Say 'Setup finished; RGB-Hub now starts at every sign-in.'
     exit 0
 } catch {
