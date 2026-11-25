@@ -103,7 +103,7 @@ def test_launcher_reads_current_and_restarts_on_75(tmp_path):
     assert str(root / "versions" / "bbb" / "site-packages") in second
     assert first[0] == "pythonw.exe"
     assert first[-2:] == ["--platform", "windows"]
-    assert sleeps == []  # a restart request is carried out at once
+    assert sleeps == [launcher.RESTART_PAUSE_S]  # a short pause, no back-off
 
 
 def test_launcher_backoff_on_crash(tmp_path):
@@ -134,6 +134,51 @@ def test_launcher_backoff_resets_after_long_uptime(tmp_path):
 
     assert launcher.supervise(root, spawn, python="py", sleep=sleeps.append, clock=clock) == 0
     assert sleeps == [5, 10, 20, 5, 10]
+
+
+def test_launcher_counts_quick_restart_requests(tmp_path):
+    root = make_root(tmp_path, "aaa", current="aaa")
+    clock = FakeClock()
+    codes = iter([75] * 7 + [0])
+    sleeps = []
+
+    def spawn(command):
+        clock.now += 1
+        return next(codes)
+
+    assert launcher.supervise(root, spawn, python="py", sleep=sleeps.append, clock=clock) == 0
+    # five quick restarts with the short pause, then it is treated as a crash loop
+    assert sleeps == [2, 2, 2, 2, 2, 5, 10]
+
+
+def test_launcher_restart_requests_after_long_runs_are_not_a_loop(tmp_path):
+    root = make_root(tmp_path, "aaa", current="aaa")
+    clock = FakeClock()
+    codes = iter([75] * 8 + [0])
+    sleeps = []
+
+    def spawn(command):
+        clock.now += 3600  # an hour between updates
+        return next(codes)
+
+    assert launcher.supervise(root, spawn, python="py", sleep=sleeps.append, clock=clock) == 0
+    assert sleeps == [2] * 8
+
+
+def test_launcher_falls_back_to_the_last_version(tmp_path):
+    root = make_root(tmp_path, "aaa", current="aaa")
+    commands = []
+
+    def spawn(command):
+        commands.append(command)
+        if len(commands) == 1:
+            (root / "current.txt").write_text("not-there")  # a broken update
+            return launcher.EXIT_RESTART
+        return launcher.EXIT_QUIT
+
+    assert launcher.supervise(root, spawn, python="py", sleep=lambda s: None) == 0
+    assert len(commands) == 2
+    assert str(root / "versions" / "aaa" / "service") in commands[1]
 
 
 def test_launcher_without_a_version_gives_up(tmp_path):
@@ -268,6 +313,63 @@ def test_session_after_the_loop_closed():
     assert watcher.handle(session.WM_ENDSESSION, 1, 0) == 0
 
 
+def test_session_close_from_outside_means_quit():
+    quits = []
+    watcher = session.SessionWatcher(
+        ManualRuntime(), lambda: None, lambda: None, lambda: None, on_quit=lambda: quits.append(1)
+    )
+    assert watcher.handle(session.WM_CLOSE, 0, 0) == 0  # the window stays; the hub quits
+    assert quits == [1]
+
+
+def test_session_end_during_a_quit_waits_for_the_hub_to_stop():
+    """The loop has stopped (a Quit is unwinding): wait for `stopped`, not the loop."""
+    runtime = ThreadRuntime()
+    runtime.stop()
+    runtime.run_until_stopped()  # closed: the end-of-session call cannot run
+    stopped = threading.Event()
+    ended = []
+    watcher = session.SessionWatcher(
+        runtime, lambda: None, lambda: None, lambda: ended.append(1), stopped=stopped
+    )
+    timer = threading.Timer(0.2, stopped.set)  # the hub finishes stopping a moment later
+    timer.start()
+    finished = threading.Event()
+    thread = threading.Thread(
+        target=lambda: (watcher.handle(session.WM_ENDSESSION, 1, 0), finished.set())
+    )
+    thread.start()
+    assert not finished.wait(0.1)  # still waiting while the hub stops
+    assert finished.wait(5)  # and released as soon as it has
+    assert ended == []
+    timer.join()
+
+
+def test_session_end_wait_after_a_quit_is_bounded():
+    runtime = ThreadRuntime()
+    runtime.stop()
+    runtime.run_until_stopped()
+    watcher = session.SessionWatcher(
+        runtime, lambda: None, lambda: None, lambda: None, stopped=threading.Event()
+    )
+    watcher.END_WAIT_S = 0.05
+    assert watcher.handle(session.WM_ENDSESSION, 1, 0) == 0
+
+
+def test_session_end_when_already_stopped_does_not_wait():
+    class NeverRuns:
+        def call_soon(self, fn):
+            pass  # the loop is stopping: queued calls never run
+
+    stopped = threading.Event()
+    stopped.set()
+    watcher = session.SessionWatcher(
+        NeverRuns(), lambda: None, lambda: None, lambda: None, stopped=stopped
+    )
+    watcher.END_WAIT_S = 30  # would hang the test if it waited
+    assert watcher.handle(session.WM_ENDSESSION, 1, 0) == 0
+
+
 def test_session_start_off_windows_is_harmless():
     watcher, _calls = make_session()
     watcher.start()
@@ -328,6 +430,73 @@ def test_tray_icon_is_drawn():
     assert isinstance(image, Image.Image)
     assert image.size == (64, 64) and image.mode == "RGBA"
     assert len(image.getcolors(maxcolors=64 * 64)) > 3  # not a blank square
+
+
+def test_tray_lets_windows_sign_out():
+    class FakeIcon:
+        _message_handlers = {0x0401: lambda wparam, lparam: 0}
+
+    icon = FakeIcon()
+    tray.allow_sign_out(icon)
+    assert icon._message_handlers[tray.WM_QUERYENDSESSION](0, 0) == 1
+    assert 0x0401 in icon._message_handlers  # pystray's own are kept
+
+
+class FakePystray:
+    """Just enough of pystray for Tray.start() and stop()."""
+
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.icons = []
+        outer = self
+
+        class Icon:
+            def __init__(self, name, image, title, menu):
+                self._message_handlers = {}
+                self.menu, self.visible, self.stopped = menu, False, False
+                outer.icons.append(self)
+
+            def run_detached(self, setup):
+                if outer.ready:
+                    setup(self)
+
+            def update_menu(self):
+                pass
+
+            def stop(self):
+                self.stopped = True
+
+        self.Icon = Icon
+        self.Menu = lambda *items: list(items)
+        self.MenuItem = lambda text, action, **options: (text, action, options)
+
+
+def test_tray_start_shows_an_icon_that_lets_windows_sign_out(monkeypatch):
+    fake = FakePystray()
+    monkeypatch.setitem(sys.modules, "pystray", fake)
+    t, _state = make_tray()
+    t.start()
+    (icon,) = fake.icons
+    assert icon.visible
+    assert icon._message_handlers[tray.WM_QUERYENDSESSION](0, 0) == 1
+    assert [text for text, _action, _options in icon.menu] == [
+        "Settings",
+        "Auto mode",
+        "Approve update…",
+        "Quit",
+    ]
+    t.stop()
+    assert icon.stopped
+
+
+def test_tray_stop_waits_a_while_for_a_starting_icon(monkeypatch):
+    fake = FakePystray(ready=False)  # pystray's loop never got going
+    monkeypatch.setitem(sys.modules, "pystray", fake)
+    monkeypatch.setattr(tray, "READY_WAIT_S", 0.05)
+    t, _state = make_tray()
+    t.start()
+    t.stop()  # returns after the wait, and still asks the icon to stop
+    assert fake.icons[0].stopped
 
 
 def test_tray_without_start_is_harmless():
@@ -535,9 +704,10 @@ class FakeTray:
 class FakeSession:
     instances = []
 
-    def __init__(self, runtime, on_sleep, on_resume, on_end):
+    def __init__(self, runtime, on_sleep, on_resume, on_end, on_quit=None, stopped=None):
         self.runtime = runtime
         self.on_sleep, self.on_resume, self.on_end = on_sleep, on_resume, on_end
+        self.on_quit, self.hub_stopped = on_quit, stopped
         self.started = self.stopped = False
         FakeSession.instances.append(self)
 
@@ -548,10 +718,34 @@ class FakeSession:
         self.stopped = True
 
 
-def run_platform(tmp_path, act):
-    """Run windows.run() on fakes; `act(tray, session, places)` runs on another thread."""
+class RecordingDevice:
+    """A device that notes what the hub asks of it."""
+
+    id = "OMEN-PC"
+    label = "Recording"
+
+    def __init__(self):
+        self.calls = []
+
+    def attach(self, hub):
+        self.hub = hub
+
+    def status(self):
+        return {"connected": True}
+
+    def __getattr__(self, name):  # start, stop, show_default, on_changed, ...
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return lambda *args: self.calls.append(name)
+
+
+def run_platform(tmp_path, monkeypatch, act, **extra):
+    """Run windows.run() on fakes; `act(tray, session, places)` runs on another thread.
+    Returns (exit code, places, opened URLs, the recording device)."""
     FakeTray.instances.clear()
     FakeSession.instances.clear()
+    device = RecordingDevice()
+    monkeypatch.setattr(windows, "build_all", lambda platform: [device])
     places = windows.Places.from_environ(
         {"APPDATA": str(tmp_path / "Roaming"), "LOCALAPPDATA": str(tmp_path / "Local")}
     )
@@ -575,32 +769,45 @@ def run_platform(tmp_path, act):
         tray_factory=FakeTray,
         session_factory=FakeSession,
         open_window=opened.append,
+        **extra,
     )
     driver.join(5)
-    return code, places, opened
+    return code, places, opened, device
 
 
-def test_run_quits_from_the_tray(tmp_path):
+def assert_stopped_once_with_default(device, places):
+    assert device.calls.count("show_default") == 1
+    assert device.calls.count("stop") == 1
+    assert device.calls.index("show_default") < device.calls.index("stop")
+    assert FakeSession.instances[0].hub_stopped.is_set()
+    assert not places.runtime_file.exists()  # removed on the way out
+
+
+def test_run_quits_from_the_tray(tmp_path, monkeypatch):
+    seen = {}
+
     def act(t, s, places):
         assert s.started
+        seen["info"] = json.loads(places.runtime_file.read_text())
         t.open_settings()
         t.set_auto_all(True)
         threading.Event().wait(0.2)
         t.quit()
 
-    code, places, opened = run_platform(tmp_path, act)
+    code, places, opened, device = run_platform(tmp_path, monkeypatch, act)
     assert code == 0
     t, s = FakeTray.instances[0], FakeSession.instances[0]
     assert t.stopped and s.stopped
     assert t.refreshes >= 1  # the tick follows the setting
-    info = json.loads(places.runtime_file.read_text())
+    info = seen["info"]
     assert info["pid"] > 0 and info["port"] > 0 and info["token"]
     assert len(opened) == 1 and opened[0].startswith(f"http://127.0.0.1:{info['port']}/?t=")
     saved = json.loads(places.settings_file.read_text())
     assert saved["auto-devices"] == {"OMEN-PC": True, "IQUNIX-KEYBOARD": True}
+    assert_stopped_once_with_default(device, places)
 
 
-def test_run_restarts_on_request_from_the_web_page(tmp_path):
+def test_run_restarts_on_request_from_the_web_page(tmp_path, monkeypatch):
     import http.client
 
     def act(t, s, places):
@@ -614,16 +821,27 @@ def test_run_restarts_on_request_from_the_web_page(tmp_path):
         )
         assert connection.getresponse().status == 204
 
-    code, _places, _opened = run_platform(tmp_path, act)
+    code, places, _opened, device = run_platform(tmp_path, monkeypatch, act)
     assert code == 75
+    assert_stopped_once_with_default(device, places)
 
 
-def test_run_ends_with_the_session(tmp_path):
+def test_run_ends_with_the_session(tmp_path, monkeypatch):
     def act(t, s, places):
         s.runtime.call_soon(s.on_end)  # what SessionWatcher does: on the loop
 
-    code, _places, _opened = run_platform(tmp_path, act)
+    code, places, _opened, device = run_platform(tmp_path, monkeypatch, act)
     assert code == 0
+    assert_stopped_once_with_default(device, places)
+
+
+def test_run_quits_when_closed_from_outside(tmp_path, monkeypatch):
+    def act(t, s, places):
+        s.runtime.call_soon(s.on_quit)  # WM_CLOSE from taskkill, via SessionWatcher
+
+    code, places, _opened, device = run_platform(tmp_path, monkeypatch, act)
+    assert code == 0
+    assert_stopped_once_with_default(device, places)
 
 
 def test_run_carries_on_without_a_tray_icon(tmp_path, monkeypatch):
@@ -635,9 +853,104 @@ def test_run_carries_on_without_a_tray_icon(tmp_path, monkeypatch):
     def act(t, s, places):
         t.quit()  # the menu is gone on Windows, but Quit still ends it here
 
-    code, _places, _opened = run_platform(tmp_path, act)
+    code, _places, _opened, _device = run_platform(tmp_path, monkeypatch, act)
     assert code == 0
     assert not FakeTray.instances[0].stopped  # never started, so not stopped either
+
+
+def test_run_gives_way_to_a_hub_already_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(windows, "build_all", lambda platform: pytest.fail("built devices"))
+    places = windows.Places.from_environ(
+        {"APPDATA": str(tmp_path / "Roaming"), "LOCALAPPDATA": str(tmp_path / "Local")}
+    )
+    code = windows.run(
+        places,
+        hid_bus=FakeHidBus({}),
+        ram_bus=FakeRamBus([]),
+        runtime=ManualRuntime(),
+        tray_factory=lambda **k: pytest.fail("tray"),
+        session_factory=lambda *a, **k: pytest.fail("session"),
+        single_instance=lambda: False,
+    )
+    assert code == 0
+    assert not places.runtime_file.exists()
+
+
+def test_run_when_it_is_the_only_hub(tmp_path, monkeypatch):
+    claims = []
+
+    def claim():
+        claims.append(1)
+        return True
+
+    code, *_rest = run_platform(
+        tmp_path, monkeypatch, lambda t, s, p: t.quit(), single_instance=claim
+    )
+    assert code == 0 and claims == [1]
+
+
+# --- one hub at a time, missed sleeps ------------------------------------------------------
+
+
+def test_claim_single_instance(monkeypatch):
+    monkeypatch.setattr(windows, "_instance", None)
+    names = []
+
+    def first(name):
+        names.append(name)
+        return 1234, 0
+
+    assert windows.claim_single_instance(first) is True
+    assert names == ["Local\\RGBHub"]
+    assert windows._instance == 1234  # kept for the life of the process
+    assert windows.claim_single_instance(lambda name: (99, 183)) is False  # ERROR_ALREADY_EXISTS
+
+
+def test_claim_single_instance_when_it_cannot_tell(monkeypatch):
+    monkeypatch.setattr(windows, "_instance", None)
+    assert windows.claim_single_instance(lambda name: (None, 5)) is True
+
+    def broken(name):
+        raise OSError("no kernel32")
+
+    assert windows.claim_single_instance(broken) is True
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert windows.claim_single_instance() is True
+
+
+def test_suspended_seconds_from_the_two_clocks():
+    # 1000 s since boot by the tick count; 940 s of it awake: slept 60 s
+    assert windows.suspended_seconds(lambda: (1_000_000, 9_400_000_000)) == pytest.approx(60.0)
+    assert windows.suspended_seconds(lambda: (5_000, 50_000_000)) == 0.0
+    # the tick count's coarser steps may put it a little behind: never negative
+    assert windows.suspended_seconds(lambda: (4_990, 50_000_000)) == 0.0
+
+
+def test_suspended_seconds_when_the_clocks_cannot_be_read(monkeypatch):
+    def broken():
+        raise OSError("no kernel32")
+
+    assert windows.suspended_seconds(broken) == 0.0
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert windows.suspended_seconds() == 0.0
+
+
+def test_hub_notices_an_unannounced_sleep_with_the_windows_clocks(tmp_path):
+    """The hub's backstop, fed by the Windows clocks: a jump means it slept."""
+    from rgbhub.core.hub import Hub
+
+    clocks = [(1_000_000, 10_000_000_000)]  # awake all along
+    device = RecordingDevice()
+    hub = Hub(
+        JsonSettings(tmp_path / "settings.json"),
+        [device],
+        slept=lambda: windows.suspended_seconds(lambda: clocks[0]),
+    )
+    hub.tick_slow()
+    assert "on_resume" not in device.calls
+    clocks[0] = (1_600_000, 10_100_000_000)  # 600 s on, only 10 s of them awake
+    hub.tick_slow()
+    assert "on_resume" in device.calls
 
 
 def test_launcher_self_check_refuses_odd_versions(tmp_path):

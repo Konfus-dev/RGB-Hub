@@ -15,6 +15,7 @@ without it (on Linux, for the tests).
 """
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -24,6 +25,23 @@ log = logging.getLogger(__name__)
 
 TITLE = "RGB-Hub"
 ICON_SIZE = 64
+WM_QUERYENDSESSION = 0x0011
+READY_WAIT_S = 5.0  # how long stop() waits for an icon still starting
+
+
+def allow_sign_out(icon) -> None:
+    """Let Windows sign out and shut down while the icon is showing.
+
+    pystray 0.19.5 (pinned in the windows extra) answers every message its
+    window has no handler for with 0; for WM_QUERYENDSESSION that means "do
+    not end the session", which holds sign-out and shutdown back. Its handler
+    table is private (Icon._message_handlers, _win32.py): check this on any
+    pystray upgrade."""
+    handlers = getattr(icon, "_message_handlers", None)
+    if isinstance(handlers, dict):
+        handlers[WM_QUERYENDSESSION] = lambda _wparam, _lparam: 1
+    else:
+        log.warning("pystray has changed: the tray icon may hold sign-out back")
 
 
 @dataclass
@@ -64,6 +82,7 @@ class Tray:
         self._quit = quit
         self._approve_update = approve_update
         self._icon = None
+        self._ready = threading.Event()  # the icon's thread is running
 
     def entries(self) -> list[Entry]:
         return [
@@ -115,8 +134,15 @@ class Tray:
             )
 
         menu = pystray.Menu(*(item(entry) for entry in self.entries()))
-        self._icon = pystray.Icon("rgbhub", draw_icon(), TITLE, menu=menu)
-        self._icon.run_detached()
+        icon = pystray.Icon("rgbhub", draw_icon(), TITLE, menu=menu)
+        allow_sign_out(icon)
+
+        def setup(running) -> None:  # on pystray's setup thread, once its loop runs
+            running.visible = True
+            self._ready.set()
+
+        self._icon = icon
+        icon.run_detached(setup)
 
     def refresh(self) -> None:
         """Show the menu's ticks and items as they are now."""
@@ -128,6 +154,10 @@ class Tray:
 
     def stop(self) -> None:
         if self._icon is not None:
+            # pystray ignores stop() until its loop runs, and that thread would
+            # then keep the process alive: let a starting icon get going first.
+            if not self._ready.wait(READY_WAIT_S):
+                log.warning("The tray icon did not start in %.0f s", READY_WAIT_S)
             try:
                 self._icon.stop()
             except Exception:

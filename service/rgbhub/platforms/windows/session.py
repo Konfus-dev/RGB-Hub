@@ -9,7 +9,9 @@ is made on a thread of its own and listens:
 - WM_QUERYENDSESSION: may Windows sign out / shut down? Always yes.
 - WM_ENDSESSION with wParam TRUE: it is happening -> on_end, and the window
   waits (at most 15 s) until it is done, because Windows ends the program as
-  soon as the message has been answered.
+  soon as the message has been answered. If the hub is already stopping (a
+  Quit under way), it waits for that instead: `stopped` is set once it is done.
+- WM_CLOSE from outside (`taskkill` without /F): taken as Quit -> on_quit.
 
 The callbacks run on the hub's loop (runtime.call_soon), never on the window's
 thread. All Win32 calls are made in start(), never at import, so this module
@@ -19,6 +21,7 @@ imports on Linux (for the tests).
 import logging
 import sys
 import threading
+import time
 from collections.abc import Callable
 
 log = logging.getLogger(__name__)
@@ -45,11 +48,16 @@ class SessionWatcher:
         on_sleep: Callable[[], None],
         on_resume: Callable[[], None],
         on_end: Callable[[], None],
+        on_quit: Callable[[], None] | None = None,
+        stopped: threading.Event | None = None,
     ):
+        """`stopped` is set once the hub has stopped (by whichever path)."""
         self._runtime = runtime
         self._on_sleep = on_sleep
         self._on_resume = on_resume
         self._on_end = on_end
+        self._on_quit = on_quit
+        self._stopped = stopped
         self._window: _Window | None = None
 
     def handle(self, message: int, wparam: int, lparam: int) -> int | None:
@@ -67,12 +75,20 @@ class SessionWatcher:
         if message == WM_ENDSESSION:
             if wparam:
                 log.info("Windows is signing out or shutting down")
-                self._on_loop(self._on_end, self.END_WAIT_S)
+                self._on_loop(self._on_end, self.END_WAIT_S, also=self._stopped)
+            return 0
+        if message == WM_CLOSE:  # only ever passed on when someone else sent it
+            log.info("Asked to close from outside; quitting")
+            if self._on_quit is not None:
+                self._on_loop(self._on_quit, 0)
             return 0
         return None
 
-    def _on_loop(self, callback: Callable[[], None], wait_s: float) -> None:
-        """Run `callback` on the hub's loop; wait up to `wait_s` for it to finish."""
+    def _on_loop(
+        self, callback: Callable[[], None], wait_s: float, also: threading.Event | None = None
+    ) -> None:
+        """Run `callback` on the hub's loop; wait up to `wait_s` for it to finish,
+        or for `also` to be set (the loop may be gone or busy stopping the hub)."""
         done = threading.Event()
 
         def run() -> None:
@@ -83,10 +99,18 @@ class SessionWatcher:
 
         try:
             self._runtime.call_soon(run)
-        except RuntimeError:  # the loop has closed: the hub has stopped already
+        except RuntimeError:  # the loop has closed: the hub is stopping or has stopped
+            if also is None:
+                return
+        if not wait_s:
             return
-        if wait_s and not done.wait(wait_s):
-            log.warning("The hub did not finish in %.0f s; carrying on", wait_s)
+        deadline = time.monotonic() + wait_s
+        while not (done.is_set() or (also is not None and also.is_set())):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                log.warning("The hub did not finish in %.0f s; carrying on", wait_s)
+                return
+            done.wait(min(left, 0.05))
 
     def start(self) -> None:
         """Start listening (on Windows; elsewhere there is nothing to listen to)."""
@@ -112,6 +136,7 @@ class _Window:
         self._handle = handle
         self._hwnd = None
         self._user32 = None
+        self._closing = False  # set by stop(): our own WM_CLOSE, not a Quit
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, name="rgbhub-session", daemon=True)
 
@@ -122,6 +147,7 @@ class _Window:
 
     def stop(self) -> None:
         if self._hwnd and self._user32 is not None:
+            self._closing = True
             self._user32.PostMessageW(self._hwnd, WM_CLOSE, 0, 0)
             self._thread.join(2)
 
@@ -192,7 +218,7 @@ class _Window:
         user32.PostQuitMessage.argtypes = [ctypes.c_int]
 
         def window_proc(hwnd, message, wparam, lparam):
-            if message == WM_CLOSE:
+            if message == WM_CLOSE and self._closing:
                 user32.DestroyWindow(hwnd)
                 return 0
             if message == WM_DESTROY:

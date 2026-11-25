@@ -12,8 +12,10 @@ Setup copies this file to the install folder (the root):
 At sign-in Windows runs `pythonw.exe launcher.py`. It runs the hub of the
 version named in current.txt as a child process and watches it:
 - exit code 0 (Quit): stop;
-- exit code 75 (restart, asked for by an update): start again at once, with
-  the version current.txt names now;
+- exit code 75 (restart, asked for by an update): start again after 2 s, with
+  the version current.txt names now (if it names none that is usable, the
+  version that ran last); more than 5 such requests in a row, each within
+  2 minutes of starting, are treated like crashes;
 - anything else (a crash): start again after a pause of 5 seconds, doubling
   each time up to 5 minutes, back to 5 seconds once a run lasted 2 minutes.
 
@@ -40,6 +42,8 @@ EXIT_RESTART = 75
 FIRST_PAUSE_S = 5
 LONGEST_PAUSE_S = 300
 GOOD_RUN_S = 120  # a run this long was not a crash loop: pause from the start again
+RESTART_PAUSE_S = 2  # between a restart request and the new start
+MAX_QUICK_RESTARTS = 5  # more restart requests than this, each soon after a start: a loop
 LOG_BYTES = 1_000_000
 
 # Run in the child: put the version's folders first on the path and start the hub.
@@ -98,23 +102,35 @@ def supervise(
 ) -> int:
     """Run the hub until it quits. Returns 0, or 1 if there is nothing to run."""
     pause = FIRST_PAUSE_S
+    last: str | None = None  # the version that ran last
+    quick_restarts = 0  # restart requests in a row, each soon after a start
     while True:
         version = read_current(root)
         if version is None:
-            log.error("No version to run: %s is missing or names none", root / "current.txt")
-            return 1
+            if last is None or not is_version(root, last):
+                log.error("No version to run: %s is missing or names none", root / "current.txt")
+                return 1
+            log.warning("%s names no usable version; running %s again", root / "current.txt", last)
+            version = last
         log.info("Starting RGB-Hub version %s", version)
         started = clock()
         code = spawn(child_command(python, version_paths(root, version), HUB_ARGS))
+        last = version
+        long_run = clock() - started >= GOOD_RUN_S
         if code == EXIT_QUIT:
             log.info("RGB-Hub quit")
             return 0
+        if long_run:
+            pause = FIRST_PAUSE_S
         if code == EXIT_RESTART:
-            log.info("RGB-Hub asked to be restarted")
-            pause = FIRST_PAUSE_S
-            continue
-        if clock() - started >= GOOD_RUN_S:
-            pause = FIRST_PAUSE_S
+            quick_restarts = 0 if long_run else quick_restarts + 1
+            if quick_restarts <= MAX_QUICK_RESTARTS:
+                log.info("RGB-Hub asked to be restarted")
+                sleep(RESTART_PAUSE_S)
+                continue
+            log.warning("RGB-Hub asked to be restarted %d times in a row", quick_restarts)
+        else:
+            quick_restarts = 0
         log.warning("RGB-Hub stopped unexpectedly (exit code %s); again in %d s", code, pause)
         sleep(pause)
         pause = min(pause * 2, LONGEST_PAUSE_S)

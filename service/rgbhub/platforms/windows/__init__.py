@@ -64,6 +64,9 @@ LOOK_AGAIN_MS = 5000  # how often the wallpaper and the LCD folder are checked f
 VM_MARKERS = ("qemu", "virtual")  # in Win32_ComputerSystem's manufacturer or model
 EDGE_WINDOW_SIZE = "900,760"
 CREATE_NO_WINDOW = 0x08000000  # a console program started from pythonw.exe shows no window
+MUTEX_NAME = "Local\\RGBHub"  # one hub per signed-in session
+ERROR_ALREADY_EXISTS = 183
+EXIT_WAIT_S = 5.0  # how long leftover threads may hold the process open after a stop
 
 
 @dataclass(frozen=True)
@@ -198,6 +201,83 @@ def _owner_only(path: Path) -> None:
         log.warning("Could not make %s readable by the owner only: %s", path, error)
 
 
+# --- one hub at a time -----------------------------------------------------------------
+
+_instance = None  # our mutex, held for the life of the process
+
+
+def _create_mutex(name: str) -> tuple[object, int]:
+    """CreateMutexW: (handle or None, GetLastError())."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    handle = kernel32.CreateMutexW(None, False, name)
+    return handle, ctypes.get_last_error()
+
+
+def claim_single_instance(create: Callable[[str], tuple[object, int]] | None = None) -> bool:
+    """True if no other hub runs in this session; the claim lasts until the
+    process ends. True also when it cannot be told (better two than none)."""
+    global _instance
+    if create is None:
+        if sys.platform != "win32":
+            return True
+        create = _create_mutex
+    try:
+        handle, error = create(MUTEX_NAME)
+    except Exception as error:
+        log.warning("Cannot check for another RGB-Hub: %s", error)
+        return True
+    if not handle:
+        log.warning("Cannot check for another RGB-Hub (error %s)", error)
+        return True
+    if error == ERROR_ALREADY_EXISTS:
+        return False
+    _instance = handle
+    return True
+
+
+# --- sleep the hub was not told about ----------------------------------------------------
+
+_clocks = None  # the two kernel32 functions, set up once
+
+
+def _read_clocks() -> tuple[int, int]:
+    """(GetTickCount64 in ms, QueryUnbiasedInterruptTime in 100 ns units)."""
+    global _clocks
+    import ctypes
+
+    if _clocks is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetTickCount64.restype = ctypes.c_uint64
+        kernel32.GetTickCount64.argtypes = []
+        kernel32.QueryUnbiasedInterruptTime.restype = ctypes.c_int
+        kernel32.QueryUnbiasedInterruptTime.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
+        _clocks = kernel32
+    unbiased = ctypes.c_uint64(0)
+    _clocks.QueryUnbiasedInterruptTime(ctypes.byref(unbiased))
+    return _clocks.GetTickCount64(), unbiased.value
+
+
+def suspended_seconds(read: Callable[[], tuple[int, int]] | None = None) -> float:
+    """Seconds spent asleep since Windows started: the tick count runs on
+    through sleep, the unbiased interrupt time does not. For the hub's check
+    for sleeps nobody announced (core.hub.suspended_seconds needs Linux's clocks)."""
+    if read is None:
+        if sys.platform != "win32":
+            return 0.0
+        read = _read_clocks
+    try:
+        tick_ms, unbiased_100ns = read()
+    except Exception as error:
+        log.debug("Cannot read the clocks: %s", error)
+        return 0.0
+    return max(0.0, tick_ms / 1e3 - unbiased_100ns / 1e7)
+
+
 def auto_all(settings) -> bool:
     """Does every device follow the app in front?"""
     chosen = settings.get("auto-devices")
@@ -302,9 +382,13 @@ def run(
     tray_factory=None,
     session_factory=None,
     open_window: Callable[[str], None] = open_settings_window,
+    single_instance: Callable[[], bool] = claim_single_instance,
 ) -> int:
     """Run the hub until Quit (returns 0), a restart request (75) or sign-out (0).
     The arguments after `places` are for tests."""
+    if not single_instance():
+        log.info("RGB-Hub is running already; this one stops")
+        return EXIT_QUIT
     if hid_bus is None:
         from .hid import HidapiBus
 
@@ -335,7 +419,16 @@ def run(
         compose_idle=cover_lcd,  # wallpapers suit a full screen
     )
     platform = Platform("windows", hid_bus, runtime, ram_bus=ram_bus, lcd_fade=True)
-    hub = Hub(settings, build_all(platform), looks=looks, scheduler=runtime)
+    hub = Hub(
+        settings, build_all(platform), looks=looks, scheduler=runtime, slept=suspended_seconds
+    )
+    hub_stopped = threading.Event()  # the Default look is showing: the session may end
+
+    def stop_hub() -> None:
+        try:
+            hub.stop()  # leaves the Default look on every device; once only
+        finally:
+            hub_stopped.set()
 
     server = SettingsServer(
         settings,
@@ -349,11 +442,12 @@ def run(
     # this ends: a device's threads left running would keep the process alive.
     with contextlib.ExitStack() as cleanup:
         cleanup.callback(stop_watching)
-        cleanup.callback(hub.stop)  # last: leaves the Default look on every device (once only)
+        cleanup.callback(stop_hub)  # last: leaves the Default look on every device
         hub.start()
         url = server.start()
         cleanup.callback(server.stop)
         write_runtime_file(places.runtime_file, os.getpid(), server.port, server.token)
+        cleanup.callback(places.runtime_file.unlink, missing_ok=True)
 
         focus = FocusWatcher(settings, runtime, os.getpid())
         cleanup.callback(focus.stop)
@@ -363,10 +457,17 @@ def run(
         cleanup.callback(runtime.cancel, look_timer)
 
         def end_of_session() -> None:  # on the loop; Windows ends us right after
-            hub.stop()  # leaves the Default look on every device
+            stop_hub()
             finish(EXIT_QUIT)
 
-        session = session_factory(runtime, hub.on_sleep, hub.on_resume, end_of_session)
+        session = session_factory(
+            runtime,
+            hub.on_sleep,
+            hub.on_resume,
+            end_of_session,
+            on_quit=lambda: finish(EXIT_QUIT),
+            stopped=hub_stopped,
+        )
         session.start()
         cleanup.callback(session.stop)
 
@@ -405,7 +506,24 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Running in a virtual machine: the lights belong to the real PC; not starting")
         return EXIT_QUIT
     try:
-        return run(places)
+        code = run(places)
     except Exception:
         log.exception("RGB-Hub stopped by an unexpected error")
-        return 1
+        code = 1
+    _exit_if_held_open(code)
+    return code
+
+
+def _exit_if_held_open(code: int, wait_s: float = EXIT_WAIT_S) -> None:
+    """Everything has been stopped. Should a thread still hold the process
+    open (a tray icon that never got going), end it anyway: the launcher
+    waits for the exit code."""
+    deadline = time.monotonic() + wait_s
+    for thread in threading.enumerate():
+        if thread is threading.current_thread() or thread.daemon:
+            continue
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            log.warning("Thread %s did not end; ending the process", thread.name)
+            logging.shutdown()
+            os._exit(code)
