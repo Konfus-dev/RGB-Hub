@@ -22,6 +22,10 @@ windows = ["hidapi==0.14.0.post4", "pystray==0.19.5", "pillow>=11", "icoextract=
 # rgbhub and its sub-packages (core, devices, platforms).
 include = ["rgbhub*"]
 
+[tool.setuptools.package-data]
+# The picture the cooler LCD keeps when RGB Hub stops with no Default look saved.
+"rgbhub.core" = ["pictures/*.jpg"]
+
 [tool.ruff]
 line-length = 100
 

@@ -12,14 +12,48 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from . import constants as c
 from .interfaces import ManualScheduler, Scheduler, Settings
+from .lights import UniformColours
 from .look import Look, Looks
 from .settings_schema import DEFAULT_KEYS, parse_default
 
 log = logging.getLogger(__name__)
+
+# Shown when the hub stops and the owner never saved a Default look: every light
+# purple and steady at full brightness, and Spike on the LCD. The LCD keeps the
+# last picture it was sent, so the picture is sent as its very last frame.
+FACTORY_COLOUR = "#8000FF"
+FACTORY_MODE = "Static"
+STOP_PICTURE = Path(__file__).resolve().parent / "pictures" / "on-stop.jpg"  # bundled
+
+
+class _SameForAll(dict):
+    """A table that gives the same value for every name (every device)."""
+
+    def __init__(self, value: Any):
+        super().__init__()
+        self.value = value
+
+    def get(self, key, default=None):
+        return self.value
+
+
+def factory_look() -> dict[str, Any]:
+    """The look to stop with when no Default look is saved."""
+    return {
+        "device-enabled": {},  # every device on
+        "device-brightness": {},  # full brightness
+        "device-modes": _SameForAll(FACTORY_MODE),
+        "zone-colours": UniformColours(FACTORY_COLOUR),
+        "lcd-enabled": True,
+        "lcd-brightness": 100,
+        "lcd-image": str(STOP_PICTURE) if STOP_PICTURE.is_file() else "",
+        "lcd-fit": "fill",
+    }
 
 AUTO_KEYS = (
     "auto-devices",
@@ -147,7 +181,11 @@ class Hub:
         if show_default:
             self.stopping = True
             self._default = parse_default(self._settings.get("default-look"))
-            log.info("Stopping: showing the Default look on every device")
+            if self._default:
+                log.info("Stopping: showing the Default look on every device")
+            else:
+                self._default = factory_look()
+                log.info("Stopping: no Default look saved, so every light goes purple")
             for device in self.devices:
                 self._each(device.show_default)
         for device in self.devices:

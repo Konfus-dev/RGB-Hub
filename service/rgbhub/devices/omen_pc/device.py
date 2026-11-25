@@ -108,8 +108,19 @@ class OmenPc:
         self._watch_image_file(None)
 
     def show_default(self) -> None:
-        """The LCD forgets its picture as soon as we stop sending it, so
-        only the lights matter here."""
+        """Leave the Default look (or, with none saved, the stop look) showing.
+
+        The LCD keeps the last frame it was sent (on the 45L it does not go
+        back to its own logo), so its picture is sent as the very last frame,
+        with no fade. Without a picture the LCD is left as it is."""
+        self._load_own_image()  # the hub now answers with the Default's lcd-image
+        self._update_lcd_brightness()
+        self._fade_iter = None
+        if self._own_jpeg is not None:
+            self._target_jpeg = self._shown_jpeg = self._own_jpeg
+            self._streamer.set_image(self._own_jpeg)
+            self._streamer.tick_claim()  # sends a waiting brightness change too
+            self._streamer.tick_frame()
         self.lights.finish_now()
         self.lights.keep()
 

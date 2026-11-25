@@ -150,6 +150,105 @@ def test_stopping_shows_the_default_without_auto_and_stores_it():
     assert settings.get("zone-colours") == {"K/All keys": "#FFFFFF"}  # the settings are untouched
 
 
+def test_stopping_without_a_saved_default_goes_purple():
+    from rgbhub.core.hub import FACTORY_COLOUR
+
+    hub, settings, lights, _ = keyboard_hub(
+        **{
+            "auto-devices": {"IQUNIX-KEYBOARD": True},
+            "focused-app": "game",
+            "zone-colours": {"K/All keys": "#FFFFFF"},
+            "device-enabled": {"IQUNIX-KEYBOARD": False},
+            "device-brightness": {"IQUNIX-KEYBOARD": 20},
+        }
+    )
+    hub.start()
+    hub.stop()
+    enabled, brightness, _modes, colour = lights.applied[-1]
+    assert colour == FACTORY_COLOUR and enabled and brightness == 100
+    assert lights.stored == 1  # the keyboard keeps it
+    assert settings.get("zone-colours") == {"K/All keys": "#FFFFFF"}  # the settings are untouched
+    assert settings.get("default-look") == "{}"
+
+
+def test_the_stop_look_puts_the_bundled_picture_on_the_lcd():
+    """The LCD keeps its last frame, so the stop look ends on a picture we ship."""
+    from pathlib import Path
+
+    from rgbhub.core.hub import STOP_PICTURE, factory_look
+
+    assert STOP_PICTURE.is_file()
+    look = factory_look()
+    assert Path(look["lcd-image"]) == STOP_PICTURE
+    assert look["lcd-enabled"] and look["lcd-brightness"] == 100
+
+
+def test_omen_show_default_sends_the_picture_as_the_last_frame():
+    from pathlib import Path
+
+    from rgbhub.core.hub import STOP_PICTURE, factory_look
+    from rgbhub.devices.omen_pc.device import OmenPc
+
+    class Streamer:
+        def __init__(self):
+            self.image, self.frames_sent, self.brightness = None, 0, None
+
+        def set_image(self, jpeg):
+            self.image = jpeg
+
+        def set_brightness(self, percent):
+            self.brightness = percent
+
+        def tick_claim(self):
+            pass
+
+        def tick_frame(self):
+            self.frames_sent += 1
+
+    class StopHub:
+        stopping, asleep = True, False
+
+        def get(self, key):
+            return factory_look()[key]
+
+    class Group:
+        def finish_now(self):
+            self.finished = True
+
+        def keep(self):
+            pass
+
+    streamer = Streamer()
+    pc = OmenPc(streamer, lights=None, prepare=lambda path, fit: Path(path).read_bytes())
+    pc._hub, pc.lights = StopHub(), Group()
+    pc.show_default()
+    assert streamer.image == STOP_PICTURE.read_bytes() and streamer.frames_sent == 1
+    assert streamer.brightness == 100 and pc.lights.finished
+
+
+def test_stopping_with_no_default_shows_the_ram_steady_purple():
+    """The RAM's own default is Rainbow, which ignores colours: it must get Static."""
+    from rgbhub.core.hub import FACTORY_COLOUR, factory_look
+    from rgbhub.core.light_group import LightGroup
+
+    class Hub_:
+        stopping, asleep = True, False
+
+        def get(self, key):
+            return factory_look().get(key, {})
+
+    class Slow:
+        def devices(self):
+            return []
+
+    slow = Slow()
+    group = LightGroup(Hub_(), "OMEN-PC", [slow], lambda: None, slow=(slow,))
+    enabled, brightness, modes, colours, _options = group._for(slow, group.settings())
+    assert enabled and brightness == 100
+    assert modes.get("RAM", "Rainbow") == "Static"
+    assert colours.get("RAM: Stick 1") == FACTORY_COLOUR
+
+
 def test_a_failing_device_does_not_stop_the_others():
     class Broken(IqunixKeyboard):
         id = label = "BROKEN"
