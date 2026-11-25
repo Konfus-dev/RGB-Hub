@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=RGB Hub: install the newest version from GitHub, if there is one
+Documentation=https://github.com/Konfus-dev/RGB-Hub
+
+[Service]
+Type=oneshot
+# Runs from its own stable copy, never from a version folder, so switching
+# versions cannot change the code while it runs. With the owner's rights only:
+# changes that need administrator rights are shown as a notification to approve.
+ExecStart=/usr/bin/python3 -I %h/.local/share/rgbhub/updater/run.py --platform gnome --once

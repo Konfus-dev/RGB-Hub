@@ -2,20 +2,32 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Per-user install for RGB-Hub. Run WITHOUT sudo:
-#     bash install/install-user.sh [--allow-detector-scan]
-# Safe to run again after pulling changes or editing the settings schema.
+#     bash install/install-user.sh [--release | --dev] [--allow-detector-scan]
+# Safe to run again.
 #
+# --release  (the default) install the latest commit of this repo's `main`
+#            branch (changes not committed to main are left out) into
+#            ~/.local/share/rgbhub/versions/, and switch on the updater,
+#            which keeps it on the newest `main` from GitHub.
+# --dev      run straight from this working copy instead (its .venv, an
+#            editable install): after editing the code you only need
+#            systemctl --user restart rgbhub. The updater pauses until
+#            --release is run again.
 # --allow-detector-scan  agree in advance to OpenRGB's one full hardware
 #                        scan, if it is needed (otherwise you are asked;
 #                        see install/openrgb-detector-scan.sh)
 set -euo pipefail
 
+usage="Usage: bash install/install-user.sh [--release | --dev] [--allow-detector-scan]"
 allow_scan=
+mode=release
 for arg in "$@"; do
     case "$arg" in
         --allow-detector-scan) allow_scan=--yes ;;
+        --release) mode=release ;;
+        --dev) mode=dev ;;
         *)
-            echo "Usage: bash install/install-user.sh [--allow-detector-scan]" >&2
+            echo "$usage" >&2
             exit 2
             ;;
     esac
@@ -28,7 +40,9 @@ fi
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 uuid="rgbhub@konfus-dev.github.io"
-venv="$HOME/.local/share/rgbhub/venv"
+root="$HOME/.local/share/rgbhub"
+current="$root/current"           # -> versions/<commit>, or the working copy (--dev)
+py="$current/.venv/bin/python"
 extensions="$HOME/.local/share/gnome-shell/extensions"
 units="$HOME/.config/systemd/user"
 
@@ -49,33 +63,66 @@ if [[ -e "$units/omenrgb.service" || -L "$extensions/omenrgb@konfus-dev.github.i
     systemctl --user daemon-reload
 fi
 
-echo "==> Python environment in $venv"
-# --system-site-packages lets it use Ubuntu's own Pillow and GTK bindings.
-# Rebuilt when it is missing or broken; an Ubuntu upgrade that brings a new
-# Python leaves the old environment unable to run.
-if ! "$venv/bin/python" -c "import pip" 2>/dev/null; then
-    python3 -m venv --clear --system-site-packages "$venv"
+mkdir -p "$root"
+if [[ -e "$current" && ! -L "$current" ]]; then
+    echo "ERROR: $current exists and is not a link made by this script. Remove it first." >&2
+    exit 1
 fi
-# Editable install: the service runs straight from this repo, so after
-# editing the code you only need: systemctl --user restart rgbhub
-"$venv/bin/pip" install --quiet --editable "$repo/service[gnome]"
+if [[ $mode == release ]]; then
+    if ! sha="$(git -C "$repo" rev-parse --verify --quiet 'main^{commit}')"; then
+        echo "ERROR: $repo has no 'main' branch to install from." >&2
+        exit 1
+    fi
+    echo "==> Installing main (${sha:0:7}) into $root/versions"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    top="rgbhub-$sha"
+    git -C "$repo" archive --format=zip --prefix="$top/" -o "$tmp/rgbhub.zip" "$sha"
+    # The snapshot installs itself (its own code, run from inside the zip): it
+    # unpacks into versions/<commit>, makes its Python environment (with
+    # Ubuntu's own Pillow and GTK bindings), checks it, points `current` at it
+    # and records it for the updater.
+    boot='import sys; sys.path.insert(0, sys.argv.pop(1)); from rgbhub.updater.install import main; sys.exit(main(sys.argv[1:]))'
+    was_dev=; [[ -e "$root/dev" ]] && was_dev=1
+    rm -f "$root/dev"
+    if ! python3 -I -c "$boot" "$tmp/rgbhub.zip/$top/service" --platform gnome \
+        --root "$root" --zip "$tmp/rgbhub.zip" --sha "$sha"; then
+        [[ -n $was_dev ]] && touch "$root/dev"
+        echo "ERROR: could not install main (${sha:0:7}); nothing was switched." >&2
+        exit 1
+    fi
+else
+    echo "==> Running from the working copy $repo (updates paused)"
+    touch "$root/dev"
+    # --system-site-packages lets it use Ubuntu's own Pillow and GTK bindings.
+    # Rebuilt when it is missing or broken (an Ubuntu upgrade that brings a
+    # new Python leaves the old environment unable to run).
+    if ! "$repo/.venv/bin/python" -c "import pip" 2>/dev/null; then
+        python3 -m venv --clear --system-site-packages "$repo/.venv"
+    fi
+    "$repo/.venv/bin/pip" install --quiet --editable "$repo/service[gnome]"
+    ln -sfn "$repo" "$root/current.new"
+    mv -T "$root/current.new" "$current"
+fi
+# Everything below comes from the active version (in --dev, the working copy).
+src="$(readlink -f "$current")"
 
-echo "==> GNOME Shell extension (linked, not copied)"
+echo "==> GNOME Shell extension (reached through $current, so it follows updates at the next login)"
 mkdir -p "$extensions"
 if [[ -e "$extensions/$uuid" && ! -L "$extensions/$uuid" ]]; then
     echo "ERROR: $extensions/$uuid exists and is not a link made by this script. Remove it first." >&2
     exit 1
 fi
-ln -sfn "$repo/frontends/gnome-shell/$uuid" "$extensions/$uuid"
-glib-compile-schemas --strict "$repo/frontends/gnome-shell/$uuid/schemas"
+ln -sfn "$current/frontends/gnome-shell/$uuid" "$extensions/$uuid"
+glib-compile-schemas --strict "$current/frontends/gnome-shell/$uuid/schemas"
 
 echo "==> OpenRGB limited to the case-light board"
 orgb="$HOME/.config/rgbhub/openrgb"
-known="$("$venv/bin/python" -m rgbhub.platforms.linux.openrgb "$orgb" "$HOME/.config/OpenRGB/OpenRGB.json")"
+known="$("$py" -m rgbhub.platforms.linux.openrgb "$orgb" "$HOME/.config/OpenRGB/OpenRGB.json")"
 # A different OpenRGB than last time may have detectors our list does not
 # name, and it runs any it does not find there. Learn its list afresh.
 rescan=0
-if [[ -e "$orgb/openrgb-program" ]] && ! "$venv/bin/python" -m rgbhub.platforms.linux.openrgb --check-program "$orgb" 2>/dev/null; then
+if [[ -e "$orgb/openrgb-program" ]] && ! "$py" -m rgbhub.platforms.linux.openrgb --check-program "$orgb" 2>/dev/null; then
     echo "    OpenRGB has been updated; checking its hardware detectors again."
     rescan=1
 fi
@@ -84,12 +131,12 @@ if (( known < 100 || rescan )); then
     # hardware scan. Do that scan once (only with the owner's say-so), then
     # switch the detectors off.
     systemctl --user stop openrgb-server.service 2>/dev/null || true
-    if ! bash "$repo/install/openrgb-detector-scan.sh" "$orgb" $allow_scan; then
+    if ! bash "$src/install/openrgb-detector-scan.sh" "$orgb" $allow_scan; then
         echo "ERROR: OpenRGB is not set up, so the case lights stay off. Run this script" >&2
         echo "       again and type 'scan', or add --allow-detector-scan." >&2
         exit 1
     fi
-    known="$("$venv/bin/python" -m rgbhub.platforms.linux.openrgb "$orgb")"
+    known="$("$py" -m rgbhub.platforms.linux.openrgb "$orgb")"
     if (( known < 100 )); then
         # Starting OpenRGB without that list would let it probe everything,
         # RAM included, at every login. Better to stop here.
@@ -98,19 +145,25 @@ if (( known < 100 || rescan )); then
         exit 1
     fi
 fi
-"$venv/bin/python" -m rgbhub.platforms.linux.openrgb --record-program "$orgb"
+"$py" -m rgbhub.platforms.linux.openrgb --record-program "$orgb"
 
 # The RAM helper runs as root from its own copy, which only setup.sh updates.
 installed_helper=/usr/local/lib/rgbhub/rgbhub_ram_helper.py
-if [[ -e "$installed_helper" ]] && ! cmp -s "$repo/helper/rgbhub_ram_helper.py" "$installed_helper"; then
-    echo "NOTE: the RAM helper has changed. To update it: sudo bash install/setup.sh"
+if [[ -e "$installed_helper" ]] && ! cmp -s "$src/helper/rgbhub_ram_helper.py" "$installed_helper"; then
+    echo "NOTE: the RAM helper has changed. To update it: sudo bash $src/install/setup.sh --no-apt"
 fi
 
 echo "==> Background services"
 mkdir -p "$units"
-install -m 0644 "$repo/systemd/openrgb-server.service" "$repo/systemd/rgbhub.service" "$units/"
+install -m 0644 "$src/systemd/openrgb-server.service" "$src/systemd/rgbhub.service" \
+    "$src/systemd/rgbhub-update.service" "$src/systemd/rgbhub-update.timer" "$units/"
 systemctl --user daemon-reload
 systemctl --user enable openrgb-server.service rgbhub.service
+if [[ $mode == release ]]; then
+    systemctl --user enable --now rgbhub-update.timer
+else
+    systemctl --user disable --now rgbhub-update.timer 2>/dev/null || true
+fi
 # Stop our service first, so it lets go of OpenRGB before OpenRGB restarts.
 # Otherwise OpenRGB cannot reopen its port for a minute or two.
 systemctl --user stop rgbhub.service
@@ -124,7 +177,10 @@ systemctl --user start rgbhub.service
 # list of enabled extensions directly; GNOME reads that list at log-in.
 # The old OmenRGB id comes off the list, so it is never enabled twice.
 gnome-extensions enable "$uuid" 2>/dev/null || true
-python3 "$repo/install/enable-gnome-extension.py" "$uuid" --remove omenrgb@konfus-dev.github.io || true
+python3 "$src/install/enable-gnome-extension.py" "$uuid" --remove omenrgb@konfus-dev.github.io || true
+
+# The environment from before versions (editable install of the repo).
+rm -rf "$root/venv"
 
 echo
 echo "Done. If this is the first install (or the first since the rename"

@@ -89,7 +89,7 @@ class FakeDconf:
             for line in (REPO / "install" / "install-user.sh").read_text().splitlines()
             if "enable-gnome-extension.py" in line and not line.lstrip().startswith("#")
         )
-        assert line.startswith('python3 "$repo/install/enable-gnome-extension.py" "$uuid"')
+        assert line.startswith('python3 "$src/install/enable-gnome-extension.py" "$uuid"')
         args = line.split('"$uuid"', 1)[1].removesuffix("|| true").split()
         return self.run(current_uuid(), *args)
 

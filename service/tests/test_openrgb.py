@@ -194,7 +194,7 @@ def test_the_server_unit_restricts_and_checks_before_it_starts_openrgb():
     pre = [line.split("=", 1)[1] for line in lines if line.startswith("ExecStartPre=")]
     start = [line.split("=", 1)[1] for line in lines if line.startswith("ExecStart=")]
     folder = "%h/.config/rgbhub/openrgb"
-    module = "%h/.local/share/rgbhub/venv/bin/python -m rgbhub.platforms.linux.openrgb"
+    module = "%h/.local/share/rgbhub/current/.venv/bin/python -m rgbhub.platforms.linux.openrgb"
     # A leading "-" would let OpenRGB start even when a check fails.
     assert pre == [
         f"{module} {folder} %h/.config/OpenRGB/OpenRGB.json",

@@ -8,10 +8,12 @@ Wants=openrgb-server.service
 PartOf=openrgb-server.service
 
 [Service]
-# Rebuild the compiled settings list first, so a newly pulled version with
-# new settings never starts against an old list.
-ExecStartPre=/usr/bin/glib-compile-schemas %h/.local/share/gnome-shell/extensions/rgbhub@konfus-dev.github.io/schemas
-ExecStart=%h/.local/share/rgbhub/venv/bin/python -m rgbhub
+# Runs the active version: `current` points into versions/ (or, after
+# `install-user.sh --dev`, at the working copy).
+# Rebuild the compiled settings list first, so a new version with new
+# settings never starts against an old list.
+ExecStartPre=/usr/bin/glib-compile-schemas %h/.local/share/rgbhub/current/frontends/gnome-shell/rgbhub@konfus-dev.github.io/schemas
+ExecStart=%h/.local/share/rgbhub/current/.venv/bin/python -m rgbhub
 Restart=on-failure
 RestartSec=5
 # On stop the hub first puts the Default look on every device; the RAM takes

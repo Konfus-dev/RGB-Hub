@@ -8,28 +8,58 @@
 # leaves every device showing the Default look.
 #
 # Batocera calls this with "start" or "stop".
+#
+# The program lives in $base/versions/<commit>/, and $base/current.txt names
+# the one to run. While switched on, the updater checks about every hour for
+# a newer version (never while a game is running) and switches to it.
 
-app=/userdata/system/rgb-hub
+base=/userdata/system/rgb-hub
 pidfile=/var/run/rgb-hub.pid            # the program itself; the game and sleep hooks signal it
-keeper=/var/run/rgb-hub.keeper.pid      # the loop below, which restarts it if it dies
+keeper=/var/run/rgb-hub.keeper.pid      # the loop below, which restarts it if it ends
+updater=/var/run/rgb-hub.updater.pid    # the updater's loop
+stopping=/var/run/rgb-hub.stopping      # present while "stop" runs: do not start it again
 log=/userdata/system/logs/rgb-hub.log
 # For a detailed log, create this (empty) file and restart the service.
 debug=/userdata/system/configs/rgb-hub/debug
 
 running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# The folder of the version to run: the one current.txt names, or (installed
+# before updates existed) $base itself, which then holds service/ directly.
+app_dir() {
+    local v=
+    [ -f "$base/current.txt" ] && read -r v <"$base/current.txt"
+    case "$v" in
+        "" | *[!0-9a-zA-Z_-]*) ;;
+        *) if [ -d "$base/versions/$v" ]; then
+            echo "$base/versions/$v"
+            return
+        fi ;;
+    esac
+    echo "$base"
+}
+
 # Batocera has nothing that restarts a service, so we do it: run the
-# program, and if it ends by itself (a crash), start it again after a pause
-# that grows while it keeps failing. Asked to stop, it ends with status 0.
+# program, and whenever it ends start it again (from the version current.txt
+# names now; the updater ends it to switch versions). After a crash the pause
+# grows while it keeps failing. "stop" creates $stopping first.
 keep_running() {
-    local pause=5 started
+    local pause=5 started app status
     while :; do
+        [ -e "$stopping" ] && break
+        app=$(app_dir)
         started=$(date +%s)
         PYTHONPATH="$app/service" python3 -m rgbhub --platform batocera ${verbose:+--verbose} >>"$log" 2>&1 &
         echo $! >"$pidfile"
         wait $!
         status=$?
-        [ "$status" -eq 0 ] && break
+        [ -e "$stopping" ] && break
+        if [ "$status" -eq 0 ] && [ $(($(date +%s) - started)) -gt 10 ]; then
+            # Ended on request (the updater switching versions): back at once.
+            echo "$(date '+%H:%M:%S') RGB Hub restarting from $(basename "$(app_dir)")" >>"$log"
+            pause=5
+            continue
+        fi
         # Ran fine for a while before dying: not a start-up problem, so be quick again.
         [ $(($(date +%s) - started)) -gt 120 ] && pause=5
         echo "$(date '+%H:%M:%S') RGB Hub ended unexpectedly (status $status); starting it again in $pause s" >>"$log"
@@ -42,6 +72,7 @@ keep_running() {
 case "$1" in
     start)
         running "$keeper" && exit 0
+        rm -f "$stopping"
         mkdir -p "$(dirname "$log")"
         # Keep the previous run's log as .old (it explains a crash or a bad
         # suspend), and start a fresh one; everything below adds to it.
@@ -50,18 +81,27 @@ case "$1" in
         rm -f /var/run/rgb-hub/asleep   # left behind if we died while the PC slept
         # The RAM lights need this kernel module; without it they are skipped.
         # (The module only fits the kernel version it was built for.)
+        app=$(app_dir)
+        module="$app/frontends/batocera/modules/$(uname -r)/acpi_call.ko"
+        [ -f "$module" ] || module="$app/modules/$(uname -r)/acpi_call.ko"
         if ! [ -e /proc/acpi/call ] && ! modprobe acpi_call 2>/dev/null &&
-            ! insmod "$app/modules/$(uname -r)/acpi_call.ko" 2>>"$log"; then
+            ! insmod "$module" 2>>"$log"; then
             echo "RAM lights are off: no acpi_call module for this Batocera's kernel ($(uname -r))." \
                 "The LCD and case lights are not affected." >>"$log"
         fi
         verbose=; [ -e "$debug" ] && verbose=1
         keep_running </dev/null >/dev/null 2>&1 &
         echo $! >"$keeper"
+        if [ -f "$base/updater/run.py" ] && ! running "$updater"; then
+            python3 -I "$base/updater/run.py" --platform batocera --loop </dev/null >>"$log" 2>&1 &
+            echo $! >"$updater"
+        fi
         ;;
     stop)
+        touch "$stopping"
         # The keeper first, or it would start the program again.
         running "$keeper" && kill "$(cat "$keeper")" 2>/dev/null
+        running "$updater" && kill "$(cat "$updater")" 2>/dev/null
         if running "$pidfile"; then
             pid=$(cat "$pidfile")
             kill "$pid" 2>/dev/null
@@ -72,6 +112,6 @@ case "$1" in
                 sleep 0.1
             done
         fi
-        rm -f "$keeper" "$pidfile"
+        rm -f "$keeper" "$pidfile" "$updater" "$stopping"
         ;;
 esac

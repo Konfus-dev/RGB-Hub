@@ -78,11 +78,12 @@ cd RGB-Hub
 #    It is short; read it first.
 sudo bash install/setup.sh
 
-# 2. As yourself: sets up the background service and the extension, and
-#    switches the extension on. The first time (and after an OpenRGB
-#    update) it asks before letting OpenRGB do one full hardware scan,
-#    which can stall the RAM sensors until a reboot; type 'scan' to agree,
-#    or add --allow-detector-scan to agree in advance.
+# 2. As yourself: installs the latest commit of `main` into
+#    ~/.local/share/rgbhub, sets up the background service and the
+#    extension, and switches the extension on. The first time (and after an
+#    OpenRGB update) it asks before letting OpenRGB do one full hardware
+#    scan, which can stall the RAM sensors until a reboot; type 'scan' to
+#    agree, or add --allow-detector-scan to agree in advance.
 bash install/install-user.sh
 
 # 3. Log out and back in. Only if the button is still missing afterwards:
@@ -91,6 +92,29 @@ gnome-extensions enable rgbhub@konfus-dev.github.io
 
 The "RGB Hub" button now appears in the top-right menu. Press it to open
 the settings window (or bring it to the front if it is already open).
+
+### Updates
+
+The installed copy keeps itself up to date: shortly after start-up and then
+every hour it looks at `main` on GitHub, and if there is a newer commit it
+installs it beside the current one, checks it, switches to it and restarts
+the hub. If the new version does not start, it goes back to the one before.
+It only ever moves forward. Your settings are never touched; a new version
+of the extension takes effect at your next login.
+
+The updater runs with your normal rights. When a new version changes a part
+that needs administrator rights (the RAM helper, the udev rules or the
+helper's system units), everything else is updated and a notification asks
+you to approve that part; Approve asks for your password and runs that
+version's `install/setup.sh --no-apt`.
+
+```sh
+systemctl --user list-timers rgbhub-update.timer   # when it looks next
+journalctl --user -u rgbhub-update -e             # what it did
+```
+
+Each version lives in `~/.local/share/rgbhub/versions/<commit>/`;
+`~/.local/share/rgbhub/current` points at the active one.
 
 ## How it works
 
@@ -121,8 +145,12 @@ partition mounted:
 sudo bash install/install-batocera.sh /path/to/SHARE
 ```
 
-Then boot Batocera and switch **RGB_HUB** on under **Main menu > System
-Settings > Services**. In the menus the LCD shows the Batocera logo; while a
+It installs the commit the checkout is on (changes not yet committed are
+left out) into `/userdata/system/rgb-hub/versions/<commit>/`. Then boot
+Batocera and switch **RGB_HUB** on under **Main menu > System
+Settings > Services**. While it is on, it looks for a newer `main` on
+GitHub at start and about every hour, and installs it when no game is
+running (logged in `/userdata/system/logs/rgb-hub.log`). In the menus the LCD shows the Batocera logo; while a
 game runs it shows that game's artwork, and the lights take its colour.
 Settings are a small JSON file; see
 [frontends/batocera/README.md](frontends/batocera/README.md).
@@ -172,9 +200,12 @@ platform code that works there; add some where it does not.
 **Adding a front end**: anything that can write the settings in
 `core/settings_schema.py` and read the `status` report is a front end.
 
-On the GNOME desktop:
+On the GNOME desktop, first run `bash install/install-user.sh --dev`: the
+service then runs straight from your working copy (its `.venv`) and the
+updater pauses; `bash install/install-user.sh --release` goes back to
+following `main`. While in `--dev`:
 after editing the service: `systemctl --user restart rgbhub`;
-after editing the settings list: `bash install/install-user.sh`;
+after editing the settings list: `bash install/install-user.sh --dev`;
 after editing the root helper: `sudo bash install/setup.sh`;
 after editing the extension's menu button: log out and back in.
 

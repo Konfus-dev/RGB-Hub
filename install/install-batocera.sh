@@ -20,14 +20,42 @@ fi
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$share/system/rgb-hub"
 
+# Runs the installing code from the snapshot itself (inside the zip), so what
+# installs is exactly what gets installed.
+boot='import sys; sys.path.insert(0, sys.argv.pop(1)); from rgbhub.updater.install import main; sys.exit(main(sys.argv[1:]))'
+# Run with sudo, git would refuse a checkout owned by someone else.
+git_() { git -c safe.directory="$repo" -C "$repo" "$@"; }
+
 echo "==> Program files -> $app"
-rm -rf "$app/service" "$app/helper"
-mkdir -p "$app/service" "$app/helper"
-cp -r "$repo/service/rgbhub" "$app/service/"
-find "$app/service" -name __pycache__ -type d -exec rm -rf {} +
-cp "$repo/helper/rgbhub_ram_helper.py" "$app/helper/"
-rm -rf "$app/modules"
-cp -r "$repo/frontends/batocera/modules" "$app/modules"
+mkdir -p "$app"
+if sha="$(git_ rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)"; then
+    # The committed state only: changes not yet committed are not installed.
+    # The updater then keeps it on the newest main from GitHub.
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    top="rgb-hub-$sha"
+    git_ archive --format=zip --prefix="$top/" -o "$tmp/rgb-hub.zip" "$sha"
+    python3 -I -c "$boot" "$tmp/rgb-hub.zip/$top/service" --platform batocera \
+        --root "$app" --zip "$tmp/rgb-hub.zip" --sha "$sha" --no-check
+    rm -rf "$app/versions/unversioned"
+else
+    # Not a git checkout (a downloaded copy): install it as it is. Without a
+    # commit id the updater cannot tell newer from older, so it leaves it alone.
+    echo "    Not a git checkout: installing without automatic updates."
+    version="$app/versions/unversioned"
+    rm -rf "$version.new"
+    mkdir -p "$version.new"
+    cp -r "$repo/service" "$repo/helper" "$version.new/"
+    mkdir -p "$version.new/frontends"
+    cp -r "$repo/frontends/batocera" "$version.new/frontends/"
+    find "$version.new" -name __pycache__ -type d -exec rm -rf {} +
+    rm -rf "$version"
+    mv "$version.new" "$version"
+    printf 'unversioned\n' >"$app/current.txt.new"
+    mv -f "$app/current.txt.new" "$app/current.txt"
+fi
+# The layout from before updates existed.
+rm -rf "$app/service" "$app/helper" "$app/modules"
 
 echo "==> Service switch (System Settings > Services > RGB_HUB)"
 mkdir -p "$share/system/services"
