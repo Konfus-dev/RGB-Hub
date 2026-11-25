@@ -37,13 +37,17 @@ class HidapiPort:
             raise OSError("connection is closed")
         if not self.alive():
             raise OSError("device is unplugged")
-        if self._device.write(report) != len(report):
+        n = self._device.write(report)
+        # hidapi may pad a short report up to the output-report length and return that.
+        if n < 0 or n < len(report):
             raise OSError("write failed")
 
     def read(self, timeout_s: float) -> bytes | None:
+        """Wait up to timeout_s; 0 polls for 1 ms, because hidapi treats a
+        timeout of 0 as a plain blocking read."""
         if not self._open:
             raise OSError("connection is closed")
-        data = self._device.read(_READ_SIZE, int(timeout_s * 1000))
+        data = self._device.read(_READ_SIZE, max(1, round(timeout_s * 1000)))
         return bytes(data) if data else None
 
     def alive(self) -> bool:
@@ -93,8 +97,6 @@ class HidapiBus:
             device.open_path(raw)
             if nonblocking:
                 device.set_nonblocking(1)
-        except OSError:
-            raise
         except Exception as e:  # hidapi raises plain exceptions on some failures
             raise OSError(str(e)) from e
         return HidapiPort(self._hid, device, raw, vendor, product, self._clock)

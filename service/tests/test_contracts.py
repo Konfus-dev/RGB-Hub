@@ -182,3 +182,30 @@ def test_hidapi_reconnects_after_replug():
     new = bus.find(match)
     assert new == "\\\\?\\hid#c"
     assert bus.open(new).alive()
+
+
+def test_hidapi_write_accepts_padded_length():
+    module, match, bus, now = _hidapi_setup()
+    path = bus.find(match)
+    module.report_length[path.encode("latin-1")] = 65
+    bus.open(path).write(b"\x00" * 33)  # hidapi pads to 65 and returns 65
+
+
+def test_hidapi_write_failure_raises():
+    import pytest
+
+    module, match, bus, now = _hidapi_setup()
+    path = bus.find(match)
+    port = bus.open(path)
+    module._devices.pop(path.encode("latin-1"))  # device gone: fake write returns -1
+    port._device._path = path.encode("latin-1")
+    port._present = True
+    with pytest.raises(OSError):
+        port.write(b"\x00x")
+
+
+def test_hidapi_read_zero_timeout_polls():
+    module, match, bus, now = _hidapi_setup()
+    port = bus.open(bus.find(match))
+    assert port.read(0) is None
+    assert module.read_timeouts[-1] >= 1

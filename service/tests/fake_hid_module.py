@@ -14,6 +14,8 @@ class FakeHidModule:
         self._queues: dict[bytes, list[bytes]] = {}
         self._writes: dict[bytes, list[bytes]] = {}
         self.enumerate_calls = 0
+        self.report_length: dict[bytes, int] = {}  # output-report length per device
+        self.read_timeouts: list[int] = []
         self.device = lambda: _FakeDevice(self)
 
     # test helpers -------------------------------------------------------
@@ -65,11 +67,12 @@ class _FakeDevice:
         if self._path is None or self._path not in self._m._devices:
             return -1
         self._m._writes[self._path].append(bytes(data))
-        return len(data)
+        return max(len(data), self._m.report_length.get(self._path, 0))
 
     def read(self, max_length: int, timeout_ms: int = 0) -> list[int]:
         if self._path is None or self._path not in self._m._devices:
             raise OSError("read error")
+        self._m.read_timeouts.append(timeout_ms)
         queue = self._m._queues[self._path]
         if queue:
             return list(queue.pop(0)[:max_length])
