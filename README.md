@@ -116,6 +116,10 @@ the hub. If the new version does not start, it goes back to the one before.
 It only ever moves forward. Your settings are never touched; a new version
 of the extension takes effect at your next login.
 
+Updates only come from GitHub, so a commit reaches your systems once it is
+pushed to `main` there. Until then the updater logs that GitHub's `main` is
+not ahead of the installed copy and leaves everything as it is.
+
 The updater runs with your normal rights. When a new version changes a part
 that needs administrator rights (the RAM helper, the udev rules or the
 helper's system units), everything else is updated and a notification asks
@@ -159,6 +163,8 @@ partition mounted:
 sudo bash install/install-batocera.sh /path/to/SHARE
 ```
 
+(EmuBox's `rgb-hub` component runs this same script for you.)
+
 It installs the latest commit of the checkout's `main` (changes not
 committed to main are left out; a copy without git history installs the
 newest `main` from GitHub instead) into
@@ -181,6 +187,15 @@ refuses otherwise), boot Ubuntu, and run:
 ```sh
 pkexec /usr/bin/bash /home/konfus/Source/RGB-Hub/install/install-windows.sh --user jercl
 ```
+
+> **Known problem (2026-11-24):** on Ubuntu's kernel 7.0 the script stops at
+> "could not make C:\Program Files\RGB-Hub admin-only from Ubuntu; nothing was
+> copied". The kernel's NTFS driver (`ntfs3`) refused the
+> `system.ntfs_security` setting the script uses to lock the folder down
+> (reading it back gave "No such file or directory" even on existing
+> folders). The script stops on purpose before copying anything, and leaves
+> Windows read-only and unchanged, so the Windows install does not complete
+> on this kernel until that step is changed.
 
 (`--user` is the Windows account's folder name under `C:\Users`;
 `--windows-mount` says where Ubuntu mounts Windows, `/mnt/windows` by
