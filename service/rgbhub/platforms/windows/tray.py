@@ -144,6 +144,16 @@ class Tray:
         self._icon = icon
         icon.run_detached(setup)
 
+    def notify(self, text: str) -> None:
+        """A short message from the icon (a Windows notification)."""
+        if self._icon is None:
+            log.info("%s", text)
+            return
+        try:
+            self._icon.notify(text, TITLE)
+        except Exception:
+            log.exception("Could not show the message %r", text)
+
     def refresh(self) -> None:
         """Show the menu's ticks and items as they are now."""
         if self._icon is not None:

@@ -637,3 +637,17 @@ def test_paused_layout_means_no_work_at_all(store):
     layout = Paused()
     assert update_once(NoNetwork(), store, layout, health_wait_s=0) == "paused"
     assert layout.calls == [] and layout.activated == []
+
+
+def test_log_option_writes_the_updaters_lines_to_a_file(monkeypatch, tmp_path):
+    """On Windows the updater runs under pythonw.exe, which has no stderr."""
+    monkeypatch.setattr(updater_main, "update_once", lambda gh, store, layout: "up-to-date")
+    log_file = tmp_path / "logs" / "updater.log"
+    argv = ["--platform", "batocera", "--root", str(tmp_path), "--once", "--log", str(log_file)]
+    try:
+        assert updater_main.main(argv) == 0
+    finally:
+        for handler in list(updater_main.log.handlers):
+            updater_main.log.removeHandler(handler)
+            handler.close()
+    assert "rgbhub-updater: update check: up-to-date" in log_file.read_text()

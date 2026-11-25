@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """`python -m rgbhub.updater --platform {gnome,batocera,windows} [--once | --loop] [--root PATH]`
 
+`--log FILE` also writes the log to FILE (Windows: pythonw.exe has no stderr).
+
 `--once` (the default) checks once; `--loop` checks at start, then about every
 hour (3600 s +/- 300 s) and never stops on an error. `--check` only imports the
 updater and the platform's layout and exits 0 (how a new stable copy proves it
@@ -10,6 +12,7 @@ runs before it replaces the old one). Logs go to stderr.
 import argparse
 import importlib
 import logging
+import logging.handlers
 import random
 import sys
 import time
@@ -54,6 +57,24 @@ def run_once(gh, store, layout) -> str:
     return result
 
 
+LOG_BYTES = 1_000_000
+
+
+def _log_to_file(path: Path, fmt: str) -> None:
+    """The updater's lines also go to `path` (about 1 MB, one older copy kept)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            path, maxBytes=LOG_BYTES, backupCount=1, encoding="utf-8"
+        )
+    except OSError as e:
+        log.warning("cannot log to %s: %s", path, e)
+        return
+    handler.setFormatter(logging.Formatter(fmt))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+
+
 def main(argv=None, *, sleep=time.sleep) -> int:
     parser = argparse.ArgumentParser(prog="rgbhub.updater", description=__doc__.splitlines()[0])
     parser.add_argument("--platform", choices=PLATFORMS, required=True)
@@ -62,11 +83,15 @@ def main(argv=None, *, sleep=time.sleep) -> int:
     mode.add_argument("--loop", action="store_true", help="check now, then every hour")
     mode.add_argument("--check", action="store_true", help="only check that the updater loads")
     parser.add_argument("--root", type=Path, help="install folder (default: the platform's)")
+    parser.add_argument(
+        "--log", type=Path, help="also log to this file (Windows: pythonw.exe has no stderr)"
+    )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        stream=sys.stderr, level=logging.INFO, format="%(asctime)s rgbhub-updater: %(message)s"
-    )
+    fmt = "%(asctime)s rgbhub-updater: %(message)s"
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format=fmt)
+    if args.log:
+        _log_to_file(args.log, fmt)
     try:
         layout, root = load_layout(args.platform, args.root)
     except LayoutMissing as e:

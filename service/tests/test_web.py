@@ -325,3 +325,61 @@ def test_unknown_api_404(web):
     server = web[0]
     assert request(server, "GET", "/api/nothing")[0] == 404
     assert request(server, "GET", "/api/set")[0] == 405
+
+
+def updater_server(tmp_path):
+    page = tmp_path / "page"
+    page.mkdir()
+    calls = []
+    server = SettingsServer(
+        JsonSettings(tmp_path / "settings.json"),
+        ManualRuntime(),
+        page,
+        tmp_path / "pictures",
+        on_notify=lambda text: calls.append(("notify", text)),
+        on_approve_pending=lambda version, changes: calls.append(("approve", version, changes)),
+    )
+    server.start()
+    return server, calls
+
+
+def test_notify_calls_back_with_the_text(tmp_path):
+    server, calls = updater_server(tmp_path)
+    try:
+        assert request(server, "POST", "/api/notify", {"text": "RGB-Hub updated"})[0] == 204
+        assert calls == [("notify", "RGB-Hub updated")]
+        for bad in ({"text": ""}, {"text": 5}, {"words": "x"}, {"text": "x" * 501}, b"[1]"):
+            assert request(server, "POST", "/api/notify", bad)[0] == 400, bad
+        assert request(server, "POST", "/api/notify", b"not json")[0] == 400
+        assert request(server, "POST", "/api/notify", {"text": "x"}, token=False)[0] == 403
+        assert calls == [("notify", "RGB-Hub updated")]
+    finally:
+        server.stop()
+
+
+def test_approve_pending_calls_back_with_version_and_changes(tmp_path):
+    server, calls = updater_server(tmp_path)
+    sha = "c" * 40
+    try:
+        body = {"version": sha, "changes": ["helper/rgbhub_ram_helper.py"]}
+        assert request(server, "POST", "/api/approve-pending", body)[0] == 204
+        assert calls == [("approve", sha, ["helper/rgbhub_ram_helper.py"])]
+        for bad in (
+            {"version": "..\\x", "changes": []},
+            {"version": sha.upper(), "changes": []},
+            {"version": sha, "changes": "helper"},
+            {"version": sha, "changes": [1]},
+            {"version": sha},
+        ):
+            assert request(server, "POST", "/api/approve-pending", bad)[0] == 400, bad
+        assert request(server, "POST", "/api/approve-pending", body, token=False)[0] == 403
+        assert len(calls) == 1
+    finally:
+        server.stop()
+
+
+def test_notify_and_approve_not_offered_without_callbacks(web):
+    server = web[0]
+    assert request(server, "POST", "/api/notify", {"text": "x"})[0] == 404
+    body = {"version": "c" * 40, "changes": []}
+    assert request(server, "POST", "/api/approve-pending", body)[0] == 404

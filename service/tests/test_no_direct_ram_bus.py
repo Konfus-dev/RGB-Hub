@@ -323,7 +323,7 @@ ALLOWED_PROGRAMS = {
     "helper/rgbhub_ram_helper_windows.py": "Windows PowerShell: HP's BIOS WMI method, no bus",
     "service/rgbhub/platforms/windows/__init__.py": (
         "PowerShell Get-CimInstance Win32_ComputerSystem (VM check), icacls on runtime.json, "
-        "Edge for the settings page"
+        "Edge for the settings page, the installed approve-privileged.ps1 (UAC prompt)"
     ),
     "service/rgbhub/platforms/windows/launcher.py": "the hub itself, in a child Python",
     "service/rgbhub/updater/layouts/gnome.py": (
@@ -331,6 +331,11 @@ ALLOWED_PROGRAMS = {
         "show, daemon-reload), notify-send, systemd-run of the approval prompt (pkexec setup.sh)"
     ),
     "service/rgbhub/updater/layouts/batocera.py": "updater (Batocera): a version's self-check",
+    "service/rgbhub/updater/layouts/windows.py": (
+        "updater (Windows): pip from pip.whl for a version, its self-check (launcher.py), "
+        "schtasks /End and /Run of the hub's task, tasklist (is the hub running)"
+    ),
+    "install/windows_settings.py": "gsettings get of RGB-Hub's own schema (installer)",
     "service/rgbhub/updater/stable.py": "updater: its own new copy, once, with --check",
 }
 STARTS_PROGRAM = re.compile(r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*)\b")
@@ -356,6 +361,7 @@ def test_python_starts_only_the_listed_programs():
 def test_the_windows_platform_starts_only_its_own_programs():
     text = dict(FILES)["service/rgbhub/platforms/windows/__init__.py"]
     assert re.findall(r"\bsubprocess\.(?:run|Popen|call|check_\w+|getoutput)\b", text) == [
+        "subprocess.Popen",  # approve_update's default
         "subprocess.run",  # in_virtual_machine
         "subprocess.run",  # _owner_only
         "subprocess.Popen",  # open_settings_window's default
@@ -363,6 +369,8 @@ def test_the_windows_platform_starts_only_its_own_programs():
     assert '"$c = Get-CimInstance Win32_ComputerSystem; $c.Manufacturer; $c.Model"' in text
     assert '["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"]' in text
     assert 'popen([edge, f"--app={url}", f"--window-size={EDGE_WINDOW_SIZE}"])' in text
+    assert '["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command]' in text
+    assert '"Start-Process powershell.exe -Verb RunAs -ArgumentList' in text
     launcher = dict(FILES)["service/rgbhub/platforms/windows/launcher.py"]
     assert re.findall(r"\bsubprocess\.(?:run|Popen|call|check_\w+|getoutput)\b", launcher) == [
         "subprocess.run",
@@ -372,7 +380,7 @@ def test_the_windows_platform_starts_only_its_own_programs():
 
 
 def test_the_update_layouts_start_programs_in_one_place():
-    for name in ("gnome", "batocera"):
+    for name in ("gnome", "batocera", "windows"):
         text = dict(FILES)[f"service/rgbhub/updater/layouts/{name}.py"]
         assert re.findall(r"\bsubprocess\.\w+\(", text) == ["subprocess.run("], name
         assert "return subprocess.run(cmd, check=False, **kw)" in text

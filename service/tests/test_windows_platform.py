@@ -227,6 +227,23 @@ def test_launcher_self_check_runs_the_named_version(tmp_path):
     assert command[-3:] == ["--self-check", "--platform", "windows"]
 
 
+def test_launcher_self_check_takes_the_version_folder_and_passes_its_exit_code(tmp_path):
+    root = make_root(tmp_path, "aaa", "bbb", current="aaa")
+    commands = []
+
+    def spawn(command):
+        commands.append(command)
+        return 3
+
+    folder = str(root / "versions" / "bbb")
+    assert launcher.main(["--root", str(root), "--self-check", folder], spawn=spawn) == 3
+    assert str(root / "versions" / "bbb" / "service") in commands[0]
+    outside = tmp_path / "elsewhere" / "bbb"
+    (outside / "service").mkdir(parents=True)
+    argv = ["--root", str(root), "--self-check", str(outside)]
+    assert launcher.main(argv, spawn=pytest.fail) == 1
+
+
 def test_launcher_pythonw_beside_python(tmp_path):
     (tmp_path / "python.exe").write_text("")
     (tmp_path / "pythonw.exe").write_text("")
@@ -448,6 +465,7 @@ class FakePystray:
     def __init__(self, ready=True):
         self.ready = ready
         self.icons = []
+        self.notes = []
         outer = self
 
         class Icon:
@@ -462,6 +480,9 @@ class FakePystray:
 
             def update_menu(self):
                 pass
+
+            def notify(self, message, title=None):
+                outer.notes.append((message, title))
 
             def stop(self):
                 self.stopped = True
@@ -687,9 +708,17 @@ class FakeTray:
     def __init__(self, open_settings, set_auto_all, auto_all, quit, approve_update=None):
         self.open_settings, self.set_auto_all = open_settings, set_auto_all
         self.auto_all, self.quit = auto_all, quit
+        self.approve_update = approve_update
         self.refreshes = 0
         self.stopped = False
+        self.messages = []
         FakeTray.instances.append(self)
+
+    def offer_update(self, approve_update):
+        self.approve_update = approve_update
+
+    def notify(self, text):
+        self.messages.append(text)
 
     def start(self):
         pass
@@ -957,3 +986,113 @@ def test_launcher_self_check_refuses_odd_versions(tmp_path):
     root = make_root(tmp_path, "aaa", current="aaa")
     for name in ("..", "missing", "../aaa"):
         assert launcher.main(["--root", str(root), "--self-check", name], spawn=pytest.fail) == 1
+
+
+# --- updates waiting for approval, messages from the updater ------------------------------
+
+
+def post(info, path, body):
+    import http.client
+
+    connection = http.client.HTTPConnection("127.0.0.1", info["port"], timeout=5)
+    connection.request(
+        "POST",
+        path,
+        body=json.dumps(body).encode(),
+        headers={"X-RGBHub-Token": info["token"], "Content-Type": "application/json"},
+    )
+    status = connection.getresponse().status
+    connection.close()
+    return status
+
+
+def test_run_shows_the_updaters_messages_and_offers_approval(tmp_path, monkeypatch):
+    sha = "d" * 40
+    approved = []
+    seen = {}
+
+    def act(t, s, places):
+        info = json.loads(places.runtime_file.read_text())
+        assert t.approve_update is None  # nothing waits yet
+        assert post(info, "/api/notify", {"text": "RGB-Hub updated to ddddddd"}) == 204
+        body = {"version": sha, "changes": ["helper/rgbhub_ram_helper_windows.py"]}
+        assert post(info, "/api/approve-pending", body) == 204
+        for _ in range(100):
+            if t.approve_update is not None:
+                break
+            threading.Event().wait(0.02)
+        seen["pending"] = json.loads(places.pending_file.read_text())
+        t.approve_update()
+        places.pending_file.unlink()  # what approve-privileged.ps1 does once it is done
+        monkeypatch.setattr(windows, "LOOK_AGAIN_MS", 50)
+        for _ in range(400):
+            if t.approve_update is None:
+                break
+            threading.Event().wait(0.02)
+        seen["after"] = t.approve_update
+        t.quit()
+
+    monkeypatch.setattr(windows, "LOOK_AGAIN_MS", 50)
+    code, places, _opened, _device = run_platform(
+        tmp_path, monkeypatch, act, approve=approved.append
+    )
+    assert code == 0
+    t = FakeTray.instances[0]
+    assert t.messages == ["RGB-Hub updated to ddddddd"]
+    assert seen["pending"] == {"version": sha, "changes": ["helper/rgbhub_ram_helper_windows.py"]}
+    assert approved == [sha]
+    assert seen["after"] is None  # hidden again once approved
+
+
+def test_run_offers_an_approval_that_waited_from_before(tmp_path, monkeypatch):
+    sha = "e" * 40
+    places = windows.Places.from_environ(
+        {"APPDATA": str(tmp_path / "Roaming"), "LOCALAPPDATA": str(tmp_path / "Local")}
+    )
+    windows.write_pending(places.pending_file, sha, ["install/windows/finish-setup.ps1"])
+    approved = []
+
+    def act(t, s, places):
+        t.approve_update()
+        t.quit()
+
+    run_platform(tmp_path, monkeypatch, act, approve=approved.append)
+    assert approved == [sha]
+
+
+def test_read_pending_refuses_odd_versions(tmp_path):
+    path = tmp_path / "pending-privileged.json"
+    assert windows.read_pending(path) is None
+    for text in ("not json", "[1]", '{"version": "..\\\\x"}', '{"version": 5}'):
+        path.write_text(text)
+        assert windows.read_pending(path) is None, text
+
+
+def test_approve_update_asks_for_admin_rights_with_the_installed_script(tmp_path):
+    calls = []
+    sha = "f" * 40
+    root = Path("C:/Users/jercl/AppData/Local/Programs/RGB-Hub")
+    programs = Path("C:/Program Files/RGB-Hub")
+    windows.approve_update(sha, root, programs, popen=lambda cmd, **kw: calls.append(cmd))
+    ((cmd),) = calls
+    assert cmd[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
+    assert cmd[4].startswith("Start-Process powershell.exe -Verb RunAs -ArgumentList '")
+    script = programs / "install" / "windows" / "approve-privileged.ps1"
+    assert f'-File "{script}" -From "{root / "versions" / sha}"' in cmd[4]
+
+    calls.clear()
+    windows.approve_update("../x", root, programs, popen=lambda cmd, **kw: calls.append(cmd))
+    odd = Path("C:/it's/RGB-Hub")
+    windows.approve_update(sha, odd, programs, popen=lambda cmd, **kw: calls.append(cmd))
+    assert calls == []
+
+
+def test_tray_notify_shows_a_message(monkeypatch):
+    fake = FakePystray()
+    monkeypatch.setitem(sys.modules, "pystray", fake)
+    t, _state = make_tray()
+    t.notify("before the icon")  # only logged
+    t.start()
+    t.notify("RGB-Hub updated")
+    assert fake.notes == [("RGB-Hub updated", "RGB-Hub")]
+    t.stop()

@@ -20,8 +20,9 @@ version named in current.txt as a child process and watches it:
   each time up to 5 minutes, back to 5 seconds once a run lasted 2 minutes.
 
 `python.exe launcher.py --self-check <v>` builds version <v>'s devices on
-fakes and returns 0 if it can (the updater asks this before activating a
-version).
+fakes and returns that check's exit code, 0 if it can (the updater asks this
+before activating a version). <v> is a version's folder name, or the folder
+itself (<root>\\versions\\<v>).
 
 Only the standard library: this file is not updated together with a version,
 so it must not depend on one.
@@ -195,6 +196,10 @@ def main(argv: list[str] | None = None, spawn: Callable[[list[str]], int] | None
     parser.add_argument("--self-check", metavar="VERSION", help="check a version, run nothing")
     args = parser.parse_args(argv)
     if args.self_check:
+        named = Path(args.self_check)
+        versions = (args.root / "versions").resolve()
+        if named.parent != Path(".") and named.resolve().parent == versions:
+            args.self_check = named.name  # the version's folder, given in full
         if not is_version(args.root, args.self_check):
             print(f"No version {args.self_check} in {args.root}", file=sys.stderr)
             return 1

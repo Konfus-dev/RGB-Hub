@@ -31,6 +31,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -86,12 +87,68 @@ class Places:
     def log_file(self) -> Path:
         return self.data / "hub.log"
 
+    @property
+    def pending_file(self) -> Path:
+        """An update waiting for the owner's approval of its admin parts (the updater's)."""
+        return self.data / "pending-privileged.json"
+
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] = os.environ) -> "Places":
         home = Path.home()
         roaming = Path(environ.get("APPDATA") or home / "AppData" / "Roaming") / "rgbhub"
         local = Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local") / "rgbhub"
         return cls(roaming / "settings.json", roaming / "lcd", roaming / "pictures", local)
+
+
+COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+def install_root() -> Path:
+    """%LOCALAPPDATA%\\Programs\\RGB-Hub: this file is in versions\\<v>\\service\\rgbhub\\..."""
+    return Path(__file__).resolve().parents[6]
+
+
+def program_dir(environ: Mapping[str, str] = os.environ) -> Path:
+    """C:\\Program Files\\RGB-Hub: the RAM helper and the setup scripts (admin-writable only)."""
+    return Path(environ.get("ProgramFiles") or "C:\\Program Files") / "RGB-Hub"
+
+
+def read_pending(path: Path) -> str | None:
+    """The version whose admin parts wait for the owner's approval, if any."""
+    try:
+        version = json.loads(path.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) and COMMIT.fullmatch(version) else None
+
+
+def write_pending(path: Path, version: str, changes: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps({"version": version, "changes": changes}), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def approve_update(
+    version: str,
+    root: Path | None = None,
+    programs: Path | None = None,
+    popen: Callable[..., object] = subprocess.Popen,
+) -> None:
+    """Ask Windows for admin rights (UAC) and run approve-privileged.ps1, which
+    installs the version's RAM helper and setup scripts into Program Files.
+    The script that runs is the installed one, never one from a version."""
+    folder = (root or install_root()) / "versions" / version
+    script = (programs or program_dir()) / "install" / "windows" / "approve-privileged.ps1"
+    if not COMMIT.fullmatch(version) or any(q in f"{folder}{script}" for q in "'\"`$"):
+        log.error("Cannot ask for approval of %s: odd path %s", version, folder)
+        return
+    inner = f'-NoProfile -ExecutionPolicy Bypass -File "{script}" -From "{folder}"'
+    command = f"Start-Process powershell.exe -Verb RunAs -ArgumentList '{inner}'"
+    popen(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
 
 
 def page_dir() -> Path:
@@ -383,6 +440,7 @@ def run(
     session_factory=None,
     open_window: Callable[[str], None] = open_settings_window,
     single_instance: Callable[[], bool] = claim_single_instance,
+    approve: Callable[[str], None] = approve_update,
 ) -> int:
     """Run the hub until Quit (returns 0), a restart request (75) or sign-out (0).
     The arguments after `places` are for tests."""
@@ -430,6 +488,34 @@ def run(
         finally:
             hub_stopped.set()
 
+    tray_box: list = []  # the tray, once it exists
+    offered = [read_pending(places.pending_file)]  # the version "Approve update..." is for
+
+    def approver(version: str | None) -> Callable[[], None] | None:
+        """What "Approve update..." runs, or None while nothing waits."""
+        return (lambda: approve(version)) if version else None
+
+    def offer_approval() -> bool:  # on the loop; also a timer callback
+        """Show or hide "Approve update..." as pending-privileged.json says
+        (the updater writes it, approve-privileged.ps1 removes it)."""
+        version = read_pending(places.pending_file)
+        if version != offered[0] and tray_box:
+            offered[0] = version
+            tray_box[0].offer_update(approver(version))
+        return True
+
+    def record_pending(version: str, changes: list[str]) -> None:  # on the loop
+        try:
+            write_pending(places.pending_file, version, changes)
+        except OSError as error:
+            log.warning("Cannot record the update waiting for approval: %s", error)
+        offer_approval()
+
+    def notify(text: str) -> None:  # on the loop
+        log.info("Message for the owner: %s", text)
+        if tray_box:
+            tray_box[0].notify(text)
+
     server = SettingsServer(
         settings,
         runtime,
@@ -437,6 +523,8 @@ def run(
         places.pictures,
         on_quit=lambda: finish(EXIT_QUIT),
         on_restart=lambda: finish(EXIT_RESTART),
+        on_notify=notify,
+        on_approve_pending=record_pending,
     )
     # Whatever has been started is stopped again, in reverse order, however
     # this ends: a device's threads left running would keep the process alive.
@@ -477,7 +565,10 @@ def run(
             set_auto_all=lambda on: runtime.call_soon(lambda: set_auto_all(settings, on)),
             auto_all=lambda: auto_all(settings),
             quit=lambda: runtime.call_soon(lambda: finish(EXIT_QUIT)),
+            approve_update=approver(offered[0]),
         )
+        pending_timer = runtime.every(LOOK_AGAIN_MS, offer_approval)
+        cleanup.callback(runtime.cancel, pending_timer)
 
         def on_setting(key: str) -> None:
             if key == "auto-devices":
@@ -486,6 +577,7 @@ def run(
         try:
             tray.start()
             cleanup.callback(tray.stop)
+            tray_box.append(tray)
             settings.subscribe(on_setting)
             cleanup.callback(settings.unsubscribe, on_setting)
         except Exception:  # the lights matter more; Quit is on the settings page too

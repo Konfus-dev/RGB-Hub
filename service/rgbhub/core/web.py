@@ -28,6 +28,11 @@ The interface:
                          kept in the pictures folder; replies {"path": ...}
     GET  /api/image      ?path=...: one of the chosen pictures, for the page to show
     POST /api/quit, /api/restart
+    POST /api/notify     {"text": ...}: show the owner a short message (Windows: a
+                         balloon from the tray icon); the updater sends these
+    POST /api/approve-pending {"version": <commit>, "changes": [...]}: an update
+                         needs the owner's approval for its admin parts (Windows:
+                         recorded, and the tray offers "Approve update...")
 
 To add an endpoint, write one method marked @_route("METHOD", "/api/...").
 """
@@ -41,6 +46,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import secrets
 import socket
 import threading
@@ -63,6 +69,8 @@ TOKEN_HEADER = "X-RGBHub-Token"
 COOKIE = "rgbhub"
 NOT_WRITABLE = ("status", "focused-app")  # written by the hub and the platform only
 # Pillow's name for a kind of picture -> the extension it is saved with
+MAX_NOTE_CHARS = 500  # a notification's text
+COMMIT = re.compile(r"[0-9a-f]{40}")
 PICTURE_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "GIF": ".gif", "BMP": ".bmp", "WEBP": ".webp"}
 
 
@@ -125,15 +133,19 @@ class SettingsServer:
         pictures_dir: Path,
         on_quit: Callable[[], None] | None = None,
         on_restart: Callable[[], None] | None = None,
+        on_notify: Callable[[str], None] | None = None,
+        on_approve_pending: Callable[[str, list[str]], None] | None = None,
     ):
         """`settings` fits core.interfaces.Settings, `runtime` core.interfaces.Runtime:
-        every change is made on its loop."""
+        every change is made on its loop, and so is every callback called."""
         self._settings = settings
         self._runtime = runtime
         self._page_dir = Path(page_dir).resolve()
         self._pictures_dir = Path(pictures_dir).resolve()
         self._on_quit = on_quit
         self._on_restart = on_restart
+        self._on_notify = on_notify
+        self._on_approve_pending = on_approve_pending
         self.token = secrets.token_urlsafe(24)
         self._cookie_secret = secrets.token_urlsafe(24)  # opens the page's files only
         self.port = 0
@@ -338,11 +350,47 @@ class SettingsServer:
     def _restart(self, request: Request) -> Reply:
         return self._call(self._on_restart)
 
+    @_route("POST", "/api/notify")
+    def _notify(self, request: Request) -> Reply:
+        data = _object(request)
+        if isinstance(data, Reply):
+            return data
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_NOTE_CHARS:
+            return _error(400, 'expected {"text": "..."}')
+        callback = self._on_notify
+        return self._call(callback and (lambda: callback(text)))
+
+    @_route("POST", "/api/approve-pending")
+    def _approve_pending(self, request: Request) -> Reply:
+        data = _object(request)
+        if isinstance(data, Reply):
+            return data
+        version, changes = data.get("version"), data.get("changes")
+        if (
+            not isinstance(version, str)
+            or not COMMIT.fullmatch(version)
+            or not isinstance(changes, list)
+            or not all(isinstance(c, str) for c in changes)
+        ):
+            return _error(400, 'expected {"version": <commit>, "changes": [...]}')
+        callback = self._on_approve_pending
+        return self._call(callback and (lambda: callback(version, changes)))
+
     def _call(self, callback: Callable[[], None] | None) -> Reply:
         if callback is None:
             return _error(404, "not offered here")
         self._runtime.call_soon(callback)
         return Reply(204)
+
+
+def _object(request: Request) -> dict | Reply:
+    """The request's body as a JSON object, or the refusal."""
+    try:
+        data = json.loads(request.body)
+    except ValueError:
+        return _error(400, "not JSON")
+    return data if isinstance(data, dict) else _error(400, "expected a JSON object")
 
 
 class _Handler(BaseHTTPRequestHandler):
